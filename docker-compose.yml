@@ -1,0 +1,47 @@
+services:
+  ff-partner-bridge:
+    image: registry.cendelin.eu/ff-partner-bridge:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      - AZURE_KEY_VAULT_URI=${AZURE_KEY_VAULT_URI}
+      - AZURE_CLIENT_ID=${MANAGED_IDENTITY_CLIENT_ID}
+    ports:
+      # Pouze interní síť XTuning — ne 0.0.0.0
+      - "172.24.0.1:8080:8080"
+    secrets:
+      - partner_cz_conn
+      - partner_pl_conn
+      - partner_hu_conn
+      - partner_us_conn
+      - servicebus_conn
+      - bridge_admin_api_key
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+secrets:
+  partner_cz_conn:
+    file: ./secrets/partner_cz_conn.txt
+  partner_pl_conn:
+    file: ./secrets/partner_pl_conn.txt
+  partner_hu_conn:
+    file: ./secrets/partner_hu_conn.txt
+  partner_us_conn:
+    file: ./secrets/partner_us_conn.txt
+  servicebus_conn:
+    file: ./secrets/servicebus_conn.txt
+  bridge_admin_api_key:
+    file: ./secrets/bridge_admin_api_key.txt

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Bridge.Api/Bridge.Api.csproj" />
+    <Project Path="src/Bridge.Application/Bridge.Application.csproj" />
+    <Project Path="src/Bridge.Domain/Bridge.Domain.csproj" />
+    <Project Path="src/Bridge.Infrastructure/Bridge.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Bridge.Tests/Bridge.Tests.csproj" />
+  </Folder>
+</Solution>

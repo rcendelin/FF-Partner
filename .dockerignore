@@ -1,0 +1,24 @@
+## Secrets — NIKDY do Docker image
+secrets/
+*.secrets
+.env
+.env.*
+
+## Git
+.git/
+.gitignore
+
+## IDE
+.vs/
+.vscode/
+.idea/
+
+## Build artifacts
+**/bin/
+**/obj/
+
+## Tests — nepotřebné v production image
+tests/
+
+## Docs
+*.md
