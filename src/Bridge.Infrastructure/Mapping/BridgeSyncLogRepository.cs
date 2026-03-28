@@ -61,4 +61,43 @@ public sealed class BridgeSyncLogRepository : ISyncLogRepository
         var rows = await conn.QueryAsync<SyncLogEntry>(sql, new { Count = count });
         return rows.ToList();
     }
+
+    public async Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(
+        CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        // Vrátí pending_region_change záznamy bez navazujícího region_change záznamu.
+        // Hledáme záznamy z posledních 7 dní aby recovery neprocházela stará data donekonečna.
+        const string sql = """
+            SELECT
+                ff_company_id AS FfCompanyId,
+                partner_client_id AS PartnerClientId,
+                partner_region AS PartnerRegion,
+                operation AS Operation,
+                service_bus_message_id AS ServiceBusMessageId,
+                status AS Status,
+                error_message AS ErrorMessage,
+                payload_json AS PayloadJson,
+                severity AS Severity,
+                created_at AS CreatedAt
+            FROM bridge_sync_log l
+            WHERE l.operation = 'pending_region_change'
+              AND l.status = 'in_progress'
+              AND l.ff_company_id IS NOT NULL
+              AND l.created_at > DATEADD(day, -7, GETUTCDATE())
+              AND NOT EXISTS (
+                  SELECT 1 FROM bridge_sync_log l2
+                  WHERE l2.ff_company_id = l.ff_company_id
+                    AND l2.operation = 'region_change'
+                    AND l2.created_at > l.created_at
+              )
+            ORDER BY l.created_at ASC
+            """;
+
+        var rows = await conn.QueryAsync<SyncLogEntry>(
+            new CommandDefinition(sql, cancellationToken: ct));
+        return rows.ToList();
+    }
 }

@@ -200,7 +200,55 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             WHERE idclient = @PartnerId
             """;
 
-        await conn.ExecuteAsync(sql, new { PartnerId = partnerId, Now = DateTime.UtcNow });
+        var affected = await conn.ExecuteAsync(sql, new { PartnerId = partnerId, Now = DateTime.UtcNow });
+        if (affected == 0)
+            throw new InvalidOperationException(
+                $"DisableAsync: idclient={partnerId} nebyl nalezen v regionu {region}.");
+    }
+
+    public async Task EnableAsync(
+        int partnerId, string region, CancellationToken ct = default)
+    {
+        await using var conn = _connectionFactory.CreateConnection(region);
+        await conn.OpenAsync(ct);
+
+        const string sql = """
+            UPDATE tbl_client SET
+                client_disable = 0,
+                last_ff_sync_at = @Now
+            WHERE idclient = @PartnerId
+            """;
+
+        var affected = await conn.ExecuteAsync(sql, new { PartnerId = partnerId, Now = DateTime.UtcNow });
+        if (affected == 0)
+            throw new InvalidOperationException(
+                $"EnableAsync: idclient={partnerId} nebyl nalezen v regionu {region}.");
+    }
+
+    public async Task DeleteAsync(
+        int partnerId, string region, CancellationToken ct = default)
+    {
+        await using var conn = _connectionFactory.CreateConnection(region);
+        await conn.OpenAsync(ct);
+
+        // POZOR: Pouze pro kompenzaci v MoveClientToRegionSaga — čerstvě vložený záznam bez objednávek.
+        // Guard: DELETE pouze pokud neexistují aktivní objednávky (ochrana před data corruption).
+        // Pokud FK constraints chybí (legacy MyISAM), tato podmínka zabraňuje orphaned tbl_order záznamům.
+        const string sql = """
+            DELETE FROM tbl_client
+            WHERE idclient = @PartnerId
+              AND NOT EXISTS (
+                  SELECT 1 FROM tbl_order
+                  WHERE id_client = @PartnerId
+                    AND order_deactive = 0
+              )
+            """;
+
+        var affected = await conn.ExecuteAsync(sql, new { PartnerId = partnerId });
+        if (affected == 0)
+            throw new InvalidOperationException(
+                $"DeleteAsync: idclient={partnerId} nelze smazat — nenalezen nebo má aktivní objednávky. " +
+                $"Nutný manuální zásah.");
     }
 
     private static PartnerClient MapToDomain(PartnerClientRow row) => new()

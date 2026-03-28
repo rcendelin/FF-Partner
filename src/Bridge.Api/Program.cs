@@ -1,5 +1,6 @@
 using Bridge.Api.Consumers;
 using Bridge.Api.Endpoints;
+using Bridge.Api.Sagas;
 using Bridge.Api.SecretReaders;
 using Bridge.Application.Services;
 using Bridge.Infrastructure;
@@ -67,7 +68,13 @@ try
 
         builder.Services.AddHostedService<CompanySyncConsumer>();
 
-        Log.Information("Infrastructure a Service Bus konzumenti zaregistrováni");
+        // Saga — transient (nové instance per použití)
+        builder.Services.AddTransient<MoveClientToRegionSaga>();
+
+        // SagaRecoveryService — spustí se jednou při startu, detekuje nedokončené ságy
+        builder.Services.AddHostedService<SagaRecoveryService>();
+
+        Log.Information("Infrastructure, Service Bus konzumenti a Saga zaregistrovány");
     }
     else
     {

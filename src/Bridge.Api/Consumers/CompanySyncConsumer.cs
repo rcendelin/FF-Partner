@@ -1,4 +1,5 @@
 using Azure.Messaging.ServiceBus;
+using Bridge.Api.Sagas;
 using Bridge.Application.Interfaces;
 using Bridge.Application.Services;
 using Bridge.Domain.Enums;
@@ -405,40 +406,32 @@ public sealed class CompanySyncConsumer : BackgroundService
         };
         var geo = await geoService.ValidateAsync(address, ct);
 
-        // Detekce změny regionu — UPDATE proběhne v existujícím regionu, přesun řeší F1-07 Saga
-        var newRegion = RegionRouter.ResolveRegion(message.CountryCode);
-        if (newRegion != region)
-        {
-            _logger.LogWarning(
-                "Firma CompanyId={CompanyId} změnila zemi na {CountryCode} (nový region: {NewRegion}, " +
-                "aktuální: {CurrentRegion}). Region migration (F1-07 Saga) je nutná. " +
-                "UPDATE proběhne v aktuálním regionu.",
-                message.CompanyId, message.CountryCode, newRegion, region);
-
-            // Audit trail: region_change musí být zaznamenán i při shutdown
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.CompanyId,
-                PartnerClientId = mapping.PartnerClientId,
-                PartnerRegion = region,
-                Operation = "region_change",
-                ServiceBusMessageId = sbMessageId,
-                Status = "warning",
-                ErrorMessage = $"CountryCode={message.CountryCode} → nový region={newRegion}, aktuální={region}. Čeká na F1-07 Saga.",
-                Severity = "Warning"
-            }, CancellationToken.None);
-        }
-
-        // 5. Mapování role + owner
+        // 5. Mapování role + owner (před region check — saga potřebuje aktuální hodnoty)
         var clientRight = Enum.TryParse<CompanyRole>(message.CompanyRole, ignoreCase: true, out var role)
             ? MapCompanyRole(role)
-            : existingClient.ClientRight;  // zachovat existující pokud neznámá role
+            : existingClient.ClientRight;
 
         var ownerId = _ownerMapping.ResolveOwnerId(message.AssignedUserId)
-            ?? existingClient.IdOwner;     // zachovat existujícího ownera pokud není mapping
+            ?? existingClient.IdOwner;
 
-        // 6. UPDATE v Partner DB
+        // 6. Připrav nový stav klienta v paměti (platí pro UPDATE i pro Saga INSERT do cílového regionu)
         var now = DateTime.UtcNow;
+
+        // Uložit původní geo hodnoty PŘED mutací — použijí se při fallback UPDATE (viz CRITICAL-1):
+        // geo FK hodnoty (CountryId, StateId, ZipId) jsou specifické pro region GAIA DB;
+        // při fallback UPDATE v původním regionu nesmíme zapsat cizí FK z jiného regionu.
+        var originalGeo = (
+            City: existingClient.ClientCity,
+            CountryId: existingClient.ClientCountryId,
+            CountryShort: existingClient.ClientCountryShort,
+            State: existingClient.ClientState,
+            StateId: existingClient.ClientStateId,
+            County: existingClient.ClientCounty,
+            CountyId: existingClient.ClientCountyId,
+            ZipId: existingClient.ClientZipId,
+            Psc: existingClient.ClientPsc
+        );
+
         existingClient.ClientFirm = message.CompanyName;
         existingClient.ClientIc = message.Ico;
         existingClient.ClientDic = message.Dic;
@@ -460,6 +453,57 @@ public sealed class CompanySyncConsumer : BackgroundService
         existingClient.DataOwner = DataOwner.FieldForce;
         existingClient.LastFfSyncAt = now;
 
+        // 7. Detekce změny regionu — spustit ságu místo prostého UPDATE
+        var newRegion = RegionRouter.ResolveRegion(message.CountryCode);
+        if (newRegion != region)
+        {
+            _logger.LogWarning(
+                "Firma CompanyId={CompanyId} změnila zemi na {CountryCode} (nový region: {NewRegion}, " +
+                "aktuální: {CurrentRegion}). Spouštím MoveClientToRegionSaga.",
+                message.CompanyId, message.CountryCode, newRegion, region);
+
+            var saga = sp.GetRequiredService<MoveClientToRegionSaga>();
+            var sagaResult = await saga.ExecuteAsync(
+                existingClient, region, newRegion, mapping, sbMessageId, ct);
+
+            if (sagaResult.IsSuccess)
+            {
+                // Saga úspěšně přesunula klienta — konec zpracování
+                return;
+            }
+
+            if (sagaResult.HasNoSideEffects)
+            {
+                // INSERT do cílového regionu selhal — klient zůstal beze změn.
+                // Fallback UPDATE v původním regionu: MUSÍME obnovit původní geo FK hodnoty.
+                // Geo validace proběhla pro novou zemi (cílový region) — ty FK hodnoty NESMÍME
+                // zapsat do původního regionu (data corruption: PL country_id v CZ DB).
+                existingClient.ClientCity = originalGeo.City;
+                existingClient.ClientPsc = originalGeo.Psc;
+                existingClient.ClientCountryId = originalGeo.CountryId;
+                existingClient.ClientCountryShort = originalGeo.CountryShort;
+                existingClient.ClientState = originalGeo.State;
+                existingClient.ClientStateId = originalGeo.StateId;
+                existingClient.ClientCounty = originalGeo.County;
+                existingClient.ClientCountyId = originalGeo.CountyId;
+                existingClient.ClientZipId = originalGeo.ZipId;
+
+                _logger.LogWarning(
+                    "Saga step 1 selhal pro CompanyId={CompanyId} — fallback UPDATE v {Region} " +
+                    "s původními geo hodnotami (adresa nebyla aktualizována).",
+                    message.CompanyId, region);
+                // Fall-through na normální UPDATE níže
+            }
+            else
+            {
+                // Saga kompenzovala — žádné trvalé změny, publish sync-failed
+                await PublishSyncFailedAsync(message, sbMessageId, "REGION_CHANGE_FAILED",
+                    $"Saga kompenzována ({sagaResult.Outcome}): {sagaResult.ErrorMessage}", "update", ct);
+                return;
+            }
+        }
+
+        // 8. UPDATE v Partner DB (normální cesta nebo fallback po Saga Krok 1 selhání)
         await partnerRepo.UpdateAsync(existingClient, region, ct);
 
         // 7. Aktualizovat mapping (last_sync_at, owner)
@@ -477,6 +521,7 @@ public sealed class CompanySyncConsumer : BackgroundService
             CreatedAt = mapping.CreatedAt,
             UpdatedAt = now
         };
+        // 9. Aktualizovat mapping (last_sync_at, owner)
         // CRITICAL: UpdateMappingAsync selhání nesmí způsobit abandon (UpdateAsync již proběhl).
         // Partner DB je zdrojem pravdy — mapping je pouze pomocný index. Logujeme warning, sync pokračuje.
         try

@@ -18,4 +18,11 @@ public interface ISyncLogRepository
 {
     Task WriteAsync(SyncLogEntry entry, CancellationToken ct = default);
     Task<IReadOnlyList<SyncLogEntry>> GetLastAsync(int count, CancellationToken ct = default);
+
+    /// <summary>
+    /// Vrátí záznamy 'pending_region_change' bez navazujícího 'region_change' záznamu.
+    /// Používá se při startu Bridge pro recovery nedokončených regionálních přesunů.
+    /// Hledá pouze záznamy z posledních 7 dní.
+    /// </summary>
+    Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default);
 }
