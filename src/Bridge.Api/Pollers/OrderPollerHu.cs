@@ -7,9 +7,9 @@ using Microsoft.Extensions.Logging;
 namespace Bridge.Api.Pollers;
 
 /// <summary>
-/// Poller pro HU region — čte tbl_order z Partner3 HU DB.
-/// Interval: 5 minut. Startup delay: 30 sekund.
-/// SQL logika: F4-03.
+/// Poller pro HU region — čte tbl_order z Partner3 HU DB každých 5 minut.
+/// Logika PollAsync je sdílena v OrderPollerBase (implementována v F4-02).
+/// HU region aktivní — backfill viz F4-03.
 /// </summary>
 public sealed class OrderPollerHu : OrderPollerBase
 {
@@ -21,16 +21,11 @@ public sealed class OrderPollerHu : OrderPollerBase
         IPollWatermarkRepository watermarkRepo,
         IOrderSnapshotRepository snapshotRepo,
         IBridgeMappingRepository mappingRepo,
+        IOrderPollingRepository orderPolling,
         ISyncLogRepository syncLog,
         IBridgeMetrics metrics,
         IPartnerDbConnectionFactory partnerDbFactory,
         ILogger<OrderPollerHu> logger)
-        : base(publisher, watermarkRepo, snapshotRepo, mappingRepo, syncLog, metrics, partnerDbFactory, logger)
+        : base(publisher, watermarkRepo, snapshotRepo, mappingRepo, orderPolling, syncLog, metrics, partnerDbFactory, logger)
     { }
-
-    protected override Task PollAsync(CancellationToken ct)
-    {
-        // SQL logika implementována v F4-03.
-        return Task.CompletedTask;
-    }
 }

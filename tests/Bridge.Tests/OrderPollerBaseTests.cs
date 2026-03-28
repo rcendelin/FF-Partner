@@ -36,6 +36,7 @@ public class OrderPollerBaseTests
                 watermarkRepo: new NoOpWatermarkRepo(),
                 snapshotRepo: new NoOpSnapshotRepo(),
                 mappingRepo: new NoOpMappingRepo(),
+                orderPolling: new NoOpOrderPolling(),
                 syncLog: new NoOpSyncLog(),
                 metrics: new NullBridgeMetrics(),
                 partnerDbFactory: new NoOpPartnerDbFactory(),
@@ -103,6 +104,12 @@ public class OrderPollerBaseTests
 
         public Task UpdateMappingAsync(Bridge.Domain.Models.IdMappingRecord record, CancellationToken ct = default)
             => Task.CompletedTask;
+
+        public Task<IReadOnlyList<int>> GetPartnerClientIdsForRegionAsync(string region, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<int>>(Array.Empty<int>());
+
+        public Task<Bridge.Domain.Models.IdMappingRecord?> GetMappingByPartnerClientAsync(int partnerClientId, string region, CancellationToken ct = default)
+            => Task.FromResult<Bridge.Domain.Models.IdMappingRecord?>(null);
     }
 
     private sealed class NoOpSyncLog : ISyncLogRepository
@@ -114,6 +121,17 @@ public class OrderPollerBaseTests
 
         public Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+    }
+
+    private sealed class NoOpOrderPolling : IOrderPollingRepository
+    {
+        public Task<IReadOnlyList<Bridge.Domain.Models.TblOrderRow>> GetNewOrdersAsync(
+            string region, IReadOnlyList<int> clientIds, int afterUnixTimestamp, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<Bridge.Domain.Models.TblOrderRow>>(Array.Empty<Bridge.Domain.Models.TblOrderRow>());
+
+        public Task<IReadOnlyList<Bridge.Domain.Models.TblOrderRow>> GetActiveOrderStatesAsync(
+            string region, IReadOnlyList<int> clientIds, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<Bridge.Domain.Models.TblOrderRow>>(Array.Empty<Bridge.Domain.Models.TblOrderRow>());
     }
 
     private sealed class NoOpPartnerDbFactory : IPartnerDbConnectionFactory
@@ -131,22 +149,22 @@ public class OrderPollerBaseTests
         // Testujeme přes instance (bez spuštění BackgroundService)
         var pollerCz = new OrderPollerCz(
             new NoOpPublisher(), new NoOpWatermarkRepo(), new NoOpSnapshotRepo(),
-            new NoOpMappingRepo(), new NoOpSyncLog(), new NullBridgeMetrics(),
+            new NoOpMappingRepo(), new NoOpOrderPolling(), new NoOpSyncLog(), new NullBridgeMetrics(),
             new NoOpPartnerDbFactory(), NullLogger<OrderPollerCz>.Instance);
 
         var pollerPl = new OrderPollerPl(
             new NoOpPublisher(), new NoOpWatermarkRepo(), new NoOpSnapshotRepo(),
-            new NoOpMappingRepo(), new NoOpSyncLog(), new NullBridgeMetrics(),
+            new NoOpMappingRepo(), new NoOpOrderPolling(), new NoOpSyncLog(), new NullBridgeMetrics(),
             new NoOpPartnerDbFactory(), NullLogger<OrderPollerPl>.Instance);
 
         var pollerHu = new OrderPollerHu(
             new NoOpPublisher(), new NoOpWatermarkRepo(), new NoOpSnapshotRepo(),
-            new NoOpMappingRepo(), new NoOpSyncLog(), new NullBridgeMetrics(),
+            new NoOpMappingRepo(), new NoOpOrderPolling(), new NoOpSyncLog(), new NullBridgeMetrics(),
             new NoOpPartnerDbFactory(), NullLogger<OrderPollerHu>.Instance);
 
         var pollerUs = new OrderPollerUs(
             new NoOpPublisher(), new NoOpWatermarkRepo(), new NoOpSnapshotRepo(),
-            new NoOpMappingRepo(), new NoOpSyncLog(), new NullBridgeMetrics(),
+            new NoOpMappingRepo(), new NoOpOrderPolling(), new NoOpSyncLog(), new NullBridgeMetrics(),
             new NoOpPartnerDbFactory(), NullLogger<OrderPollerUs>.Instance);
 
         // Přístup přes reflection — Region a PollTarget jsou protected

@@ -71,6 +71,13 @@ public static class DependencyInjection
         services.AddSingleton<IOrderSnapshotRepository>(
             _ => new OrderSnapshotRepository(azureSqlConnectionString));
 
+        // Order polling — čtení tbl_order z Partner3 MySQL DB (Fáze 4)
+        services.AddSingleton<IOrderPollingRepository>(sp =>
+        {
+            var factory = sp.GetRequiredService<IPartnerDbConnectionFactory>();
+            return new OrderPollingRepository(factory);
+        });
+
         return services;
     }
 }

@@ -110,4 +110,49 @@ public sealed class BridgeMappingRepository : IBridgeMappingRepository
         // Invalidace cache po zápisu
         _cache.Remove(CacheKey(mapping.FfCompanyId));
     }
+
+    public async Task<IReadOnlyList<int>> GetPartnerClientIdsForRegionAsync(
+        string region, CancellationToken ct = default)
+    {
+        const string sql = """
+            SELECT partner_client_id
+            FROM bridge_id_mapping
+            WHERE partner_region = @Region
+              AND entity_type = 'client'
+            """;
+
+        await using var conn = new SqlConnection(_connectionString);
+        var result = await conn.QueryAsync<int>(
+            new CommandDefinition(sql, new { Region = region }, cancellationToken: ct));
+        return result.AsList();
+    }
+
+    public async Task<IdMappingRecord?> GetMappingByPartnerClientAsync(
+        int partnerClientId, string region, CancellationToken ct = default)
+    {
+        // Tento lookup necachujeme — je volán jen pollerem jednou per poll cyklus
+        const string sql = """
+            SELECT
+                ff_company_id AS FfCompanyId,
+                partner_client_id AS PartnerClientId,
+                partner_region AS PartnerRegion,
+                entity_type AS EntityType,
+                pipedrive_id AS PipedriveId,
+                ff_user_id AS FfUserId,
+                partner_owner_id AS PartnerOwnerId,
+                last_sync_at AS LastSyncAt,
+                last_sync_direction AS LastSyncDirection,
+                created_at AS CreatedAt,
+                updated_at AS UpdatedAt
+            FROM bridge_id_mapping
+            WHERE partner_client_id = @PartnerClientId
+              AND partner_region = @Region
+              AND entity_type = 'client'
+            """;
+
+        await using var conn = new SqlConnection(_connectionString);
+        return await conn.QueryFirstOrDefaultAsync<IdMappingRecord>(
+            new CommandDefinition(sql, new { PartnerClientId = partnerClientId, Region = region },
+                cancellationToken: ct));
+    }
 }
