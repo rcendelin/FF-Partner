@@ -1,0 +1,165 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  DOCKER_IMAGE: registry.cendelin.eu/ff-partner-bridge
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  build-and-test:
+    name: Build + Test
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ env.DOTNET_VERSION }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # Cacheujeme NuGet balíčky — klíč se mění při změně .csproj souborů
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Run tests
+        run: >
+          dotnet test
+          --configuration Release
+          --no-restore
+          --logger trx
+          --results-directory "${{ runner.temp }}/TestResults"
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ github.run_number }}
+          path: ${{ runner.temp }}/TestResults/**/*.trx
+          if-no-files-found: warn
+
+  docker-push:
+    name: Docker Build + Push
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    # Spustit pouze na push do main — ne na PR ani develop
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    outputs:
+      image-tag: ${{ steps.build.outputs.image-tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker login
+        run: >
+          echo "${{ secrets.REGISTRY_PASSWORD }}"
+          | docker login registry.cendelin.eu
+            --username "${{ secrets.REGISTRY_USERNAME }}"
+            --password-stdin
+
+      - name: Docker build
+        id: build
+        run: |
+          # Používáme run_number (sekvenční) místo run_id (globální velké číslo)
+          IMAGE_TAG="${{ github.run_number }}"
+          docker build \
+            --tag "${{ env.DOCKER_IMAGE }}:${IMAGE_TAG}" \
+            --label "git-commit=${{ github.sha }}" \
+            --label "build-id=${{ github.run_number }}" \
+            .
+          echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Docker push
+        run: docker push "${{ env.DOCKER_IMAGE }}:${{ steps.build.outputs.image-tag }}"
+
+  deploy:
+    name: Deploy on-premise (XTuning)
+    runs-on: ubuntu-22.04
+    needs: docker-push
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # GitHub Environment 'production' = required reviewers + audit log
+    environment: production
+
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          # Zapisujeme klíč ze secrets — nikdy nelogovat obsah
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # known_hosts ze secrets (výstup ssh-keyscan na deploy hostu)
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: SSH deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          IMAGE_TAG: ${{ needs.docker-push.outputs.image-tag }}
+        run: |
+          # Bezpečnostní validace: DEPLOY_HOST nesmí obsahovat speciální znaky
+          # Zabraňuje command injection v případě kompromitace secrets
+          if [[ ! "$DEPLOY_HOST" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            echo "::error::DEPLOY_HOST obsahuje neplatné znaky: $DEPLOY_HOST"
+            exit 1
+          fi
+
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o StrictHostKeyChecking=yes \
+            "deploy@${DEPLOY_HOST}" \
+            "cd /opt/ff-partner-bridge \
+              && docker pull registry.cendelin.eu/ff-partner-bridge:${IMAGE_TAG} \
+              && IMAGE_TAG=${IMAGE_TAG} docker compose up -d --no-build ff-partner-bridge \
+              && echo 'Deploy dokoncen:' \$(date -u)"
+
+      - name: Health check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          BRIDGE_HEALTH_URL: ${{ secrets.BRIDGE_HEALTH_URL }}
+        run: |
+          if [[ ! "$DEPLOY_HOST" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            echo "::error::DEPLOY_HOST obsahuje neplatné znaky"
+            exit 1
+          fi
+
+          # Health check přes SSH — Bridge naslouchá pouze na interní síti XTuning
+          HEALTH_URL="${BRIDGE_HEALTH_URL:-http://localhost:8080/health}"
+          for i in $(seq 1 10); do
+            echo "Health check pokus $i/10..."
+            if ssh \
+                -i ~/.ssh/deploy_key \
+                -o UserKnownHostsFile=~/.ssh/known_hosts \
+                -o StrictHostKeyChecking=yes \
+                "deploy@${DEPLOY_HOST}" \
+                "curl --silent --fail '${HEALTH_URL}' | grep -q 'healthy'"; then
+              echo "Bridge je zdravý!"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "::error::Bridge health check selhal po 50 sekundách"
+          exit 1
+
+      # SSH klíč vždy smazat — i při selhání předchozích kroků
+      - name: Cleanup SSH keys
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/known_hosts
