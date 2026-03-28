@@ -121,6 +121,9 @@ public class OrderPollerBaseTests
 
         public Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+
+        public Task<bool> HasOperationSucceededAsync(string operation, string region, CancellationToken ct = default)
+            => Task.FromResult(false);
     }
 
     private sealed class NoOpOrderPolling : IOrderPollingRepository

@@ -100,4 +100,26 @@ public sealed class BridgeSyncLogRepository : ISyncLogRepository
             new CommandDefinition(sql, cancellationToken: ct));
         return rows.ToList();
     }
+
+    public async Task<bool> HasOperationSucceededAsync(
+        string operation, string region, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        const string sql = """
+            SELECT CAST(
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM bridge_sync_log
+                    WHERE operation = @Operation
+                      AND partner_region = @Region
+                      AND status = 'success'
+                ) THEN 1 ELSE 0 END
+            AS BIT)
+            """;
+
+        return await conn.ExecuteScalarAsync<bool>(
+            new CommandDefinition(sql, new { Operation = operation, Region = region },
+                cancellationToken: ct));
+    }
 }

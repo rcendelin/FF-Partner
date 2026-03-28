@@ -25,4 +25,10 @@ public interface ISyncLogRepository
     /// Hledá pouze záznamy z posledních 7 dní.
     /// </summary>
     Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Zkontroluje, zda operace pro daný region proběhla úspěšně (status='success').
+    /// Používá OrderBackfillService pro idempotentní jednorázové spuštění.
+    /// </summary>
+    Task<bool> HasOperationSucceededAsync(string operation, string region, CancellationToken ct = default);
 }

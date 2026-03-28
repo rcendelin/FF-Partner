@@ -116,7 +116,11 @@ try
         builder.Services.AddHostedService<OrderPollerHu>();
         builder.Services.AddHostedService<OrderPollerUs>();
 
-        Log.Information("Infrastructure, Service Bus konzumenti, Saga a Order pollery zaregistrovány");
+        // Backfill — jednorázový export objednávek za posledních 12 měsíců (Fáze 4 inicializace)
+        // Spustí se 60s po startu, idempotentní per region (bridge_sync_log kontrola)
+        builder.Services.AddHostedService<OrderBackfillService>();
+
+        Log.Information("Infrastructure, Service Bus konzumenti, Saga, Order pollery a backfill zaregistrovány");
     }
     else
     {
