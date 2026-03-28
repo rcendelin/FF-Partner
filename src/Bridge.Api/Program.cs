@@ -1,6 +1,7 @@
 using Azure.Messaging.ServiceBus.Administration;
 using Bridge.Api.Consumers;
 using Bridge.Api.Endpoints;
+
 using Bridge.Api.Middleware;
 using Bridge.Api.Sagas;
 using Bridge.Api.SecretReaders;
@@ -154,6 +155,12 @@ try
     {
         app.MapMappingEndpoints();
         app.MapSyncLogEndpoints();
+    }
+
+    // BulkSync endpoint — vyžaduje Service Bus (publisher), registrován pokud jsou dostupné conn strings
+    if (!string.IsNullOrEmpty(serviceBusConn))
+    {
+        app.MapBulkSyncEndpoints();
     }
 
     await app.RunAsync();
