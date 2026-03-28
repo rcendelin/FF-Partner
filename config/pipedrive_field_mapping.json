@@ -1,0 +1,93 @@
+{
+  "_comment": "Mapování Pipedrive custom field hash klíčů a role option ID pro všechny 3 Pipedrive instance XTuning. Zdroj: GAIA3/cron/gen_pipe_data.py + GAIA3/app/system/pipe_transfer.py (2026-03-28). Použití: migrační skript F0-03 (naplnění bridge_migration_staging) a F0-04 (párování s FieldForce Company.PipedriveId).",
+
+  "instances": {
+    "CE": {
+      "_comment": "Central Europe instance — pokrývá regiony cz a hu (stejné field klíče, stejná Pipedrive instance)",
+      "partners": ["cz", "hu"],
+      "fields": {
+        "role":       { "hash": "cbefc366ac009f0cda9cf2192cd22cca648a39af", "field_id": 4027 },
+        "country":    { "hash": "03ecaaab9ca3fd43d2bf29eb943c8dca7147955e", "field_id": 4026 },
+        "partner_id": { "hash": "09c4a3e580ae2b1131012490843ee62e87fb337d" },
+        "link_partner": { "hash": "3a04f03f9e97c5f8e4b380c5678c29adaaea9298" }
+      },
+      "role_option_id_to_client_right": {
+        "_comment": "Pipedrive option ID (z /api/v1/organizationFields/4027) → tbl_client.client_right",
+        "23": 2,
+        "24": 1,
+        "25": 0
+      },
+      "client_right_to_role_option_id": {
+        "_comment": "tbl_client.client_right → Pipedrive option ID (inverzní mapování pro pipe_transfer.py)",
+        "0": "25",
+        "1": "24",
+        "2": "23"
+      }
+    },
+
+    "US": {
+      "_comment": "USA instance — pokrývá region us",
+      "partners": ["us"],
+      "fields": {
+        "role":       { "hash": "3dcb1d5f4b853227ab9f51b3bf527cdaaba8899a", "field_id": 4025 },
+        "country":    { "hash": "abd77752df990038f847c374352f340949dc233b", "field_id": 4022 },
+        "partner_id": { "hash": "0ec0698e07b53d3bb1272ea721eae72331327cab" },
+        "link_partner": { "hash": "de828c6560e197cb2736defc4635eb48d1280769" },
+        "dealer":     { "hash": "a3f5db60ebb9117db108769a4074ae565382bafc", "_note": "US-specifické pole pro dealer jméno" }
+      },
+      "role_option_id_to_client_right": {
+        "_comment": "US má odlišné option ID pro stejné role",
+        "92": 0,
+        "86": 1,
+        "87": 2
+      },
+      "client_right_to_role_option_id": {
+        "0": "92",
+        "1": "86",
+        "2": "87"
+      }
+    },
+
+    "PL": {
+      "_comment": "Poland instance — pokrývá region pl",
+      "partners": ["pl"],
+      "fields": {
+        "role":       { "hash": "08086f53d0088eac57c1427c28948a95a2bc70c4", "field_id": 4022 },
+        "country":    { "hash": "0d91762a9dc99f94d0c1b6bc190bb5cb0793b1ae", "field_id": 4023 },
+        "partner_id": { "hash": "c53f4e8325d02628faf29655367204b050bdc558" },
+        "link_partner": { "hash": "6dfe689e8091b7adef22f293f1c44d4d943654f2" }
+      },
+      "role_option_id_to_client_right": {
+        "18": 0,
+        "20": 1,
+        "19": 2
+      },
+      "client_right_to_role_option_id": {
+        "0": "18",
+        "1": "20",
+        "2": "19"
+      }
+    }
+  },
+
+  "partner_id_format": {
+    "_comment": "Formát hodnoty v poli partner_id: '{idclient}/{region}' nebo 'tb{idclient}/{region}'. Regex: ^(tb)?(\\d+)/(cz|hu|pl|us)$. Extrakce: group(2) = idclient (int), group(3) = region.",
+    "regex": "^(tb)?(\\d+)/(cz|hu|pl|us)$",
+    "examples": ["12345/cz", "tb12345/hu", "99/us", "1/pl"]
+  },
+
+  "pipe_organizations_schema": {
+    "_comment": "Schéma GAIA tabulky pipe_organizations (MySQL) — zdrojová tabulka pro F0-03 migraci",
+    "columns": {
+      "pipe_id":     "BIGINT — Pipedrive organization ID (párovací klíč s FieldForce Company.PipedriveId)",
+      "role":        "VARCHAR — Role label (textový label z Pipedrive, NE option ID). Mapuj přes role_option_id_to_client_right NEBO přímo text.",
+      "country":     "VARCHAR — Country label (textový label z Pipedrive)",
+      "address":     "VARCHAR — Adresa organizace",
+      "partner":     "VARCHAR — Region klíč: cz/hu/pl/us (NULL pokud partner_id = -1)",
+      "partner_id":  "INT — tbl_client.idclient (-1 pokud nepárováno)",
+      "owner":       "VARCHAR — Jméno vlastníka (Pipedrive user name)",
+      "name":        "VARCHAR — Název organizace",
+      "pipe_type":   "VARCHAR — Instance: CE/US/PL"
+    }
+  }
+}
