@@ -114,6 +114,9 @@ public sealed class BridgeMappingRepository : IBridgeMappingRepository
     public async Task<IReadOnlyList<int>> GetPartnerClientIdsForRegionAsync(
         string region, CancellationToken ct = default)
     {
+        // Voláno každých 5 minut z OrderPoller a při backfillu.
+        // Záměrně necachujeme — nové firmy (po CompanySync CREATE) musí být viditelné okamžitě.
+        // Výsledek předáme do MySQL IN @ClientIds pro filtrování objednávek v tbl_order.
         const string sql = """
             SELECT partner_client_id
             FROM bridge_id_mapping
@@ -130,7 +133,8 @@ public sealed class BridgeMappingRepository : IBridgeMappingRepository
     public async Task<IdMappingRecord?> GetMappingByPartnerClientAsync(
         int partnerClientId, string region, CancellationToken ct = default)
     {
-        // Tento lookup necachujeme — je volán jen pollerem jednou per poll cyklus
+        // Zpětné vyhledání: Partner3 idclient → FieldForce Company.Id (pro event routing v polleru).
+        // Necachujeme — poller volá tuto metodu per objednávku, cache by vyžadovala invalidaci při každém region přesunu.
         const string sql = """
             SELECT
                 ff_company_id AS FfCompanyId,

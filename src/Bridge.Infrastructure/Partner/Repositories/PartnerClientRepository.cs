@@ -5,8 +5,14 @@ namespace Bridge.Infrastructure.Partner.Repositories;
 
 /// <summary>
 /// Dapper-based repository pro tbl_client v Partner3 MySQL DB.
-/// POZOR: Nikdy nemodifikovat pipe_id, pipeType, int_client.
-/// POZOR: client_date se zapisuje pouze při INSERT, nikdy při UPDATE.
+///
+/// Klíčová omezení (dle CLAUDE.md sekce 5):
+/// - NIKDY nemodifikovat: pipe_id, pipeType, int_client (historické Pipedrive hodnoty)
+/// - client_date: pouze při INSERT, nikdy při UPDATE
+/// - Bridge nemodifikuje záznamy s data_owner = 'PIPEDRIVE' (read-only z pohledu Bridge)
+///
+/// CancellationToken: všechny Dapper dotazy přijímají CT přes CommandDefinition,
+/// aby šly zrušit při graceful shutdown Bridge.
 /// </summary>
 public sealed class PartnerClientRepository : IPartnerClientRepository
 {
@@ -37,8 +43,9 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             LIMIT 1
             """;
 
+        // Používáme CommandDefinition aby se CT propagoval do MySQL síťového volání
         var row = await conn.QueryFirstOrDefaultAsync<PartnerClientRow>(
-            sql, new { FfCompanyId = ffCompanyId.ToString() });
+            new CommandDefinition(sql, new { FfCompanyId = ffCompanyId.ToString() }, cancellationToken: ct));
 
         return row is null ? null : MapToDomain(row);
     }
@@ -64,7 +71,7 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             """;
 
         var row = await conn.QueryFirstOrDefaultAsync<PartnerClientRow>(
-            sql, new { PartnerId = partnerId });
+            new CommandDefinition(sql, new { PartnerId = partnerId }, cancellationToken: ct));
 
         return row is null ? null : MapToDomain(row);
     }
@@ -98,7 +105,7 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             SELECT LAST_INSERT_ID();
             """;
 
-        var insertedId = await conn.ExecuteScalarAsync<int>(sql, new
+        var param = new
         {
             client.ClientFirm,
             client.ClientIc,
@@ -123,7 +130,10 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             client.FfSyncSource,
             DataOwner = client.DataOwner.ToString().ToUpperInvariant(),
             client.LastFfSyncAt
-        });
+        };
+
+        var insertedId = await conn.ExecuteScalarAsync<int>(
+            new CommandDefinition(sql, param, cancellationToken: ct));
 
         return insertedId;
     }
@@ -134,8 +144,8 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
         await using var conn = _connectionFactory.CreateConnection(region);
         await conn.OpenAsync(ct);
 
-        // client_date: NIKDY při UPDATE
-        // pipe_id, pipeType, int_client: NIKDY modifikovat
+        // client_date: NIKDY při UPDATE — zachovat původní datum vzniku záznamu
+        // pipe_id, pipeType, int_client: NIKDY modifikovat — historické Pipedrive hodnoty
         const string sql = """
             UPDATE tbl_client SET
                 client_firm = @ClientFirm,
@@ -161,7 +171,7 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             WHERE idclient = @IdClient
             """;
 
-        await conn.ExecuteAsync(sql, new
+        var param = new
         {
             client.ClientFirm,
             client.ClientIc,
@@ -184,7 +194,9 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             DataOwner = client.DataOwner.ToString().ToUpperInvariant(),
             client.LastFfSyncAt,
             client.IdClient
-        });
+        };
+
+        await conn.ExecuteAsync(new CommandDefinition(sql, param, cancellationToken: ct));
     }
 
     public async Task DisableAsync(
@@ -200,7 +212,9 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             WHERE idclient = @PartnerId
             """;
 
-        var affected = await conn.ExecuteAsync(sql, new { PartnerId = partnerId, Now = DateTime.UtcNow });
+        var affected = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { PartnerId = partnerId, Now = DateTime.UtcNow }, cancellationToken: ct));
+
         if (affected == 0)
             throw new InvalidOperationException(
                 $"DisableAsync: idclient={partnerId} nebyl nalezen v regionu {region}.");
@@ -219,7 +233,9 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             WHERE idclient = @PartnerId
             """;
 
-        var affected = await conn.ExecuteAsync(sql, new { PartnerId = partnerId, Now = DateTime.UtcNow });
+        var affected = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { PartnerId = partnerId, Now = DateTime.UtcNow }, cancellationToken: ct));
+
         if (affected == 0)
             throw new InvalidOperationException(
                 $"EnableAsync: idclient={partnerId} nebyl nalezen v regionu {region}.");
@@ -231,9 +247,10 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
         await using var conn = _connectionFactory.CreateConnection(region);
         await conn.OpenAsync(ct);
 
-        // POZOR: Pouze pro kompenzaci v MoveClientToRegionSaga — čerstvě vložený záznam bez objednávek.
-        // Guard: DELETE pouze pokud neexistují aktivní objednávky (ochrana před data corruption).
-        // Pokud FK constraints chybí (legacy MyISAM), tato podmínka zabraňuje orphaned tbl_order záznamům.
+        // POZOR: Tato metoda je VÝLUČNĚ pro kompenzaci v MoveClientToRegionSaga.
+        // Bezpečnostní guard: DELETE je povolen pouze pokud neexistují aktivní objednávky.
+        // Legacy Partner3 používá MyISAM (bez FK constraints) — guard zabraňuje orphaned tbl_order záznamům.
+        // Pokud DELETE selže (=0 affected), saga loguje CRITICAL a vyžaduje manuální zásah.
         const string sql = """
             DELETE FROM tbl_client
             WHERE idclient = @PartnerId
@@ -244,7 +261,9 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
               )
             """;
 
-        var affected = await conn.ExecuteAsync(sql, new { PartnerId = partnerId });
+        var affected = await conn.ExecuteAsync(
+            new CommandDefinition(sql, new { PartnerId = partnerId }, cancellationToken: ct));
+
         if (affected == 0)
             throw new InvalidOperationException(
                 $"DeleteAsync: idclient={partnerId} nelze smazat — nenalezen nebo má aktivní objednávky. " +
@@ -266,7 +285,9 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             """;
 
         var affected = await conn.ExecuteAsync(
-            sql, new { Email = email, Phone = phone, Now = DateTime.UtcNow, PartnerId = partnerId });
+            new CommandDefinition(sql,
+                new { Email = email, Phone = phone, Now = DateTime.UtcNow, PartnerId = partnerId },
+                cancellationToken: ct));
 
         if (affected == 0)
             throw new InvalidOperationException(
@@ -287,7 +308,9 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
             """;
 
         var affected = await conn.ExecuteAsync(
-            sql, new { OwnerId = ownerId, Now = DateTime.UtcNow, PartnerId = partnerId });
+            new CommandDefinition(sql,
+                new { OwnerId = ownerId, Now = DateTime.UtcNow, PartnerId = partnerId },
+                cancellationToken: ct));
 
         if (affected == 0)
             throw new InvalidOperationException(

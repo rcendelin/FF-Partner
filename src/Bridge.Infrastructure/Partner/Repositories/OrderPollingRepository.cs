@@ -6,13 +6,20 @@ namespace Bridge.Infrastructure.Partner.Repositories;
 
 /// <summary>
 /// Čte objednávky z tbl_order v Partner3 MySQL DB.
-/// Vyžaduje Dapper multi-param support pro IN clause.
-/// Pouze SELECT — Bridge nikdy nepíše do tbl_order.
+///
+/// Design poznámky:
+/// - Pouze SELECT — Bridge NIKDY nepíše do tbl_order (CLAUDE.md sekce 17)
+/// - order_date_modified NEEXISTUJE (ověřeno 2026-03-27) — nelze použít pro change detection
+/// - GetNewOrdersAsync: watermark strategie přes order_date_start (unix timestamp)
+/// - GetActiveOrderStatesAsync: plný scan aktivních objednávek pro MD5 snapshot comparison
+/// - IN @ClientIds: Dapper automaticky rozbalí IReadOnlyList na SQL IN seznam
+/// - CancellationToken propagován přes CommandDefinition pro podporu graceful shutdown
 /// </summary>
 public sealed class OrderPollingRepository : IOrderPollingRepository
 {
     private readonly IPartnerDbConnectionFactory _factory;
 
+    // Sdílený SELECT seznam sloupců pro obě metody — vynechány sloupce nepotřebné pro polling
     private const string OrderColumns = """
         idorder AS IdOrder,
         id_client AS IdClient,
@@ -36,6 +43,11 @@ public sealed class OrderPollingRepository : IOrderPollingRepository
         _factory = factory;
     }
 
+    /// <summary>
+    /// Vrátí objednávky s order_date_start > <paramref name="afterUnixTimestamp"/> pro dané klienty.
+    /// Backfill volání: afterUnixTimestamp = nyní - 12 měsíců.
+    /// Polling volání: afterUnixTimestamp = hodnota z bridge_poll_watermark.
+    /// </summary>
     public async Task<IReadOnlyList<TblOrderRow>> GetNewOrdersAsync(
         string region,
         IReadOnlyList<int> clientIds,
@@ -55,15 +67,18 @@ public sealed class OrderPollingRepository : IOrderPollingRepository
             ORDER BY order_date_start ASC, idorder ASC
             """;
 
-        using var conn = _factory.CreateConnection(region);
-        var result = await conn.QueryAsync<TblOrderRow>(sql, new
-        {
-            AfterTs = afterUnixTimestamp,
-            ClientIds = clientIds
-        });
+        // await using zajistí asynchronní dispose MySqlConnection (vs. synchronní Dispose)
+        await using var conn = _factory.CreateConnection(region);
+        var result = await conn.QueryAsync<TblOrderRow>(
+            new CommandDefinition(sql, new { AfterTs = afterUnixTimestamp, ClientIds = clientIds },
+                cancellationToken: ct));
         return result.AsList();
     }
 
+    /// <summary>
+    /// Vrátí aktuální stavy všech aktivních objednávek pro dané klienty.
+    /// Výsledek se porovná s bridge_order_snapshot (MD5 hash) pro change detection.
+    /// </summary>
     public async Task<IReadOnlyList<TblOrderRow>> GetActiveOrderStatesAsync(
         string region,
         IReadOnlyList<int> clientIds,
@@ -80,8 +95,9 @@ public sealed class OrderPollingRepository : IOrderPollingRepository
               AND id_client IN @ClientIds
             """;
 
-        using var conn = _factory.CreateConnection(region);
-        var result = await conn.QueryAsync<TblOrderRow>(sql, new { ClientIds = clientIds });
+        await using var conn = _factory.CreateConnection(region);
+        var result = await conn.QueryAsync<TblOrderRow>(
+            new CommandDefinition(sql, new { ClientIds = clientIds }, cancellationToken: ct));
         return result.AsList();
     }
 }

@@ -4,6 +4,17 @@ using Microsoft.Data.SqlClient;
 
 namespace Bridge.Infrastructure.Mapping;
 
+/// <summary>
+/// Repository pro audit log Bridge operací (bridge_sync_log v Azure SQL).
+///
+/// Tabulka slouží třem účelům:
+/// 1. Diagnostika: GetLastAsync pro /api/sync-log endpoint (provozní monitoring)
+/// 2. Saga recovery: GetPendingSagasAsync — detekuje nedokončené region přesuny po restartu
+/// 3. Idempotence: HasOperationSucceededAsync — jednorázové operace (order_backfill)
+///
+/// Poznámka k INSERT: SyncLogEntry.CreatedAt má default = DateTime.UtcNow,
+/// takže se při každém new SyncLogEntry { ... } automaticky nastaví na aktuální čas.
+/// </summary>
 public sealed class BridgeSyncLogRepository : ISyncLogRepository
 {
     private readonly string _connectionString;
@@ -30,12 +41,13 @@ public sealed class BridgeSyncLogRepository : ISyncLogRepository
             )
             """;
 
-        await conn.ExecuteAsync(sql, entry);
+        await conn.ExecuteAsync(new CommandDefinition(sql, entry, cancellationToken: ct));
     }
 
     public async Task<IReadOnlyList<SyncLogEntry>> GetLastAsync(
         int count, CancellationToken ct = default)
     {
+        // Clamp count: zamezit neúmyslně velkým dotazům z /api/sync-log?last=999999
         if (count is < 1 or > 500)
             count = 50;
 
@@ -58,7 +70,8 @@ public sealed class BridgeSyncLogRepository : ISyncLogRepository
             ORDER BY created_at DESC
             """;
 
-        var rows = await conn.QueryAsync<SyncLogEntry>(sql, new { Count = count });
+        var rows = await conn.QueryAsync<SyncLogEntry>(
+            new CommandDefinition(sql, new { Count = count }, cancellationToken: ct));
         return rows.ToList();
     }
 
@@ -68,8 +81,10 @@ public sealed class BridgeSyncLogRepository : ISyncLogRepository
         await using var conn = new SqlConnection(_connectionString);
         await conn.OpenAsync(ct);
 
-        // Vrátí pending_region_change záznamy bez navazujícího region_change záznamu.
-        // Hledáme záznamy z posledních 7 dní aby recovery neprocházela stará data donekonečna.
+        // Logika: najít pending_region_change záznamy (operation='pending_region_change', status='in_progress')
+        // které NEMAJÍ navazující region_change záznam pro stejné ff_company_id.
+        // Okno 7 dní: zabraňuje prohledávání neomezeně historických dat při každém startu.
+        // Výsledek se předá SagaRecoveryService která rozhodne, zda ságu doběhnout nebo zkompenzovat.
         const string sql = """
             SELECT
                 ff_company_id AS FfCompanyId,
@@ -107,6 +122,8 @@ public sealed class BridgeSyncLogRepository : ISyncLogRepository
         await using var conn = new SqlConnection(_connectionString);
         await conn.OpenAsync(ct);
 
+        // SELECT EXISTS pattern: efektivnější než COUNT(*) — zastaví se u prvního nalezeného řádku.
+        // Použití: OrderBackfillService kontroluje před každým regionem zda backfill již proběhl.
         const string sql = """
             SELECT CAST(
                 CASE WHEN EXISTS (

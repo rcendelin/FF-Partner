@@ -528,7 +528,9 @@ public sealed class CompanySyncConsumer : BackgroundService
         // 8. UPDATE v Partner DB (normální cesta nebo fallback po Saga Krok 1 selhání)
         await partnerRepo.UpdateAsync(existingClient, region, ct);
 
-        // 7. Aktualizovat mapping (last_sync_at, owner)
+        // 9. Aktualizovat mapping (last_sync_at, owner)
+        // CRITICAL: UpdateMappingAsync selhání nesmí způsobit abandon (UpdateAsync již proběhl).
+        // Partner DB je zdrojem pravdy — mapping je pouze pomocný index. Logujeme warning, sync pokračuje.
         var updatedMapping = new IdMappingRecord
         {
             FfCompanyId = mapping.FfCompanyId,
@@ -543,9 +545,6 @@ public sealed class CompanySyncConsumer : BackgroundService
             CreatedAt = mapping.CreatedAt,
             UpdatedAt = now
         };
-        // 9. Aktualizovat mapping (last_sync_at, owner)
-        // CRITICAL: UpdateMappingAsync selhání nesmí způsobit abandon (UpdateAsync již proběhl).
-        // Partner DB je zdrojem pravdy — mapping je pouze pomocný index. Logujeme warning, sync pokračuje.
         try
         {
             await _mappingRepo.UpdateMappingAsync(updatedMapping, ct);
@@ -572,7 +571,7 @@ public sealed class CompanySyncConsumer : BackgroundService
             // Pokračovat — zpráva bude completed, ne abandoned
         }
 
-        // 8. Publish bridge.company.synced
+        // 10. Publish bridge.company.synced
         await _publisher.PublishAsync("bridge.company.synced", new CompanySyncedResponse
         {
             MessageId = Guid.NewGuid().ToString(),
@@ -583,7 +582,7 @@ public sealed class CompanySyncConsumer : BackgroundService
             Action = "Update"
         }, sbMessageId, ct);
 
-        // 9. Log úspěchu
+        // 11. Log úspěchu
         await _syncLog.WriteAsync(new SyncLogEntry
         {
             FfCompanyId = message.CompanyId,

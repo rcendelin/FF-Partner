@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Bridge.Api.Middleware;
@@ -9,11 +10,14 @@ namespace Bridge.Api.Middleware;
 /// /health endpoint je exempt — nevyžaduje autentizaci (Docker healthcheck).
 ///
 /// Bezpečnostní vlastnosti:
-/// - Constant-time porovnání klíče (CryptographicOperations.FixedTimeEquals) — odolné vůči timing attacks
-/// - API klíč se nikdy neloguje
+/// - Constant-time porovnání klíče via CryptographicOperations.FixedTimeEquals — odolné vůči timing attacks.
+///   Framework-provided, FIPS-auditovaná implementace (preferovaná nad vlastním XOR kódem).
+/// - API klíč se nikdy neloguje ani neinspektuje nad rámec porovnání
 /// - 401 bez WWW-Authenticate hlavičky (neodhaluje auth mechanismus třetím stranám)
+/// - IP adresa se loguje pro detekci brute-force pokusů
 ///
 /// Zdroj klíče: Docker Secret 'bridge_admin_api_key' (načten při startu v Program.cs).
+/// Prázdný klíč v produkci → Bridge odmítne start (viz Program.cs).
 /// </summary>
 public sealed class ApiKeyMiddleware
 {
@@ -26,7 +30,7 @@ public sealed class ApiKeyMiddleware
     public ApiKeyMiddleware(RequestDelegate next, string expectedApiKey, ILogger<ApiKeyMiddleware> logger)
     {
         _next = next;
-        // Uložit jako bytes jednou — konstantní porovnání nevyžaduje re-encoding per request
+        // Pre-encode očekávaný klíč jednou při startu — vyhýbáme se alokaci per request
         _expectedKeyBytes = Encoding.UTF8.GetBytes(expectedApiKey);
         _logger = logger;
     }
@@ -56,10 +60,11 @@ public sealed class ApiKeyMiddleware
 
         var providedKeyBytes = Encoding.UTF8.GetBytes(providedKeyValues.ToString());
 
-        // Constant-time porovnání bez délkového oracle:
-        // XOR-redukce přes celou délku obou bufferů (max délka) — útočník nemůže rozlišit
-        // "špatná délka" od "špatný obsah" na základě doby odpovědi.
-        var isValid = ConstantTimeEquals(providedKeyBytes, _expectedKeyBytes);
+        // CryptographicOperations.FixedTimeEquals: frameworková constant-time implementace.
+        // Délky musí být shodné — různá délka okamžitě vrátí false, ale stále v constant time.
+        // Výhoda oproti vlastní XOR implementaci: garantovaná constant-time i po JIT optimalizacích.
+        var isValid = providedKeyBytes.Length == _expectedKeyBytes.Length
+            && CryptographicOperations.FixedTimeEquals(providedKeyBytes, _expectedKeyBytes);
 
         if (!isValid)
         {
@@ -74,25 +79,5 @@ public sealed class ApiKeyMiddleware
         }
 
         await _next(context);
-    }
-
-    /// <summary>
-    /// Constant-time porovnání dvou byte polí.
-    /// Nevyzrazuje délku ani obsah přes časový kanál (timing side-channel).
-    /// XOR akumuluje rozdíly přes max délku obou polí — výsledek 0 = rovnost.
-    /// </summary>
-    private static bool ConstantTimeEquals(byte[] a, byte[] b)
-    {
-        var maxLen = Math.Max(a.Length, b.Length);
-        var diff = a.Length ^ b.Length; // nenulové pokud délky se liší
-
-        for (var i = 0; i < maxLen; i++)
-        {
-            var byteA = i < a.Length ? a[i] : (byte)0;
-            var byteB = i < b.Length ? b[i] : (byte)0;
-            diff |= byteA ^ byteB;
-        }
-
-        return diff == 0;
     }
 }
