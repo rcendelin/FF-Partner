@@ -54,7 +54,7 @@ public sealed class BridgeMappingRepository : IBridgeMappingRepository
             """;
 
         var row = await conn.QueryFirstOrDefaultAsync<IdMappingRecord>(
-            sql, new { FfCompanyId = ffCompanyId });
+            new CommandDefinition(sql, new { FfCompanyId = ffCompanyId }, cancellationToken: ct));
 
         if (row is not null)
             _cache.Set(key, row, CacheTtl);
@@ -80,7 +80,7 @@ public sealed class BridgeMappingRepository : IBridgeMappingRepository
             )
             """;
 
-        await conn.ExecuteAsync(sql, mapping);
+        await conn.ExecuteAsync(new CommandDefinition(sql, mapping, cancellationToken: ct));
 
         // Invalidace cache po zápisu
         _cache.Remove(CacheKey(mapping.FfCompanyId));
@@ -105,7 +105,7 @@ public sealed class BridgeMappingRepository : IBridgeMappingRepository
               AND entity_type = @EntityType
             """;
 
-        await conn.ExecuteAsync(sql, mapping);
+        await conn.ExecuteAsync(new CommandDefinition(sql, mapping, cancellationToken: ct));
 
         // Invalidace cache po zápisu
         _cache.Remove(CacheKey(mapping.FfCompanyId));

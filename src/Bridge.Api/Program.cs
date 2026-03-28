@@ -1,4 +1,8 @@
+using Bridge.Api.Consumers;
 using Bridge.Api.Endpoints;
+using Bridge.Api.SecretReaders;
+using Bridge.Application.Services;
+using Bridge.Infrastructure;
 using Serilog;
 using Serilog.Events;
 
@@ -34,6 +38,42 @@ try
     {
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
+    }
+
+    // Infrastructure + Service Bus — pouze pokud jsou dostupné connection strings
+    // (v testech nejsou → služby se nezaregistrují, /health endpoint funguje i bez nich)
+    var azureSqlConn = DockerSecretsReader.TryRead(
+        "azure_sql_conn", builder.Configuration, "Bridge:AzureSql");
+    var gaiaConn = DockerSecretsReader.TryRead(
+        "gaia_conn", builder.Configuration, "Bridge:Gaia");
+    var serviceBusConn = DockerSecretsReader.TryRead(
+        "servicebus_conn", builder.Configuration, "Bridge:ServiceBus:ConnectionString");
+
+    if (!string.IsNullOrEmpty(azureSqlConn)
+        && !string.IsNullOrEmpty(gaiaConn)
+        && !string.IsNullOrEmpty(serviceBusConn))
+    {
+        var partnerConnStrings = DockerSecretsReader.ReadPartnerConnectionStrings(builder.Configuration);
+        var ownerMappingOptions = builder.Configuration
+            .GetSection(OwnerMappingOptions.SectionName)
+            .Get<OwnerMappingOptions>() ?? new OwnerMappingOptions();
+
+        builder.Services.AddInfrastructure(
+            azureSqlConnectionString: azureSqlConn,
+            gaiaConnectionString: gaiaConn,
+            partnerConnectionStrings: partnerConnStrings,
+            serviceBusConnectionString: serviceBusConn,
+            ownerMappingOptions: ownerMappingOptions);
+
+        builder.Services.AddHostedService<CompanySyncConsumer>();
+
+        Log.Information("Infrastructure a Service Bus konzumenti zaregistrováni");
+    }
+    else
+    {
+        Log.Warning(
+            "Chybí connection strings — Infrastructure a Service Bus konzumenti NEBUDOU zaregistrováni. " +
+            "Pouze /health endpoint je dostupný.");
     }
 
     var app = builder.Build();

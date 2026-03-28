@@ -1,3 +1,4 @@
+using Azure.Messaging.ServiceBus;
 using Bridge.Application.Interfaces;
 using Bridge.Application.Services;
 using Bridge.Infrastructure.Gaia;
@@ -5,6 +6,7 @@ using Bridge.Infrastructure.Gaia.Repositories;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner;
 using Bridge.Infrastructure.Partner.Repositories;
+using Bridge.Infrastructure.ServiceBus;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -20,7 +22,9 @@ public static class DependencyInjection
         this IServiceCollection services,
         string azureSqlConnectionString,
         string gaiaConnectionString,
-        IReadOnlyDictionary<string, string> partnerConnectionStrings)
+        IReadOnlyDictionary<string, string> partnerConnectionStrings,
+        string serviceBusConnectionString,
+        OwnerMappingOptions ownerMappingOptions)
     {
         // In-memory cache pro mapping lookup
         services.AddMemoryCache();
@@ -52,6 +56,13 @@ public static class DependencyInjection
 
         // Application services
         services.AddScoped<IGeoValidationService, GeoValidationService>();
+
+        // Azure Service Bus
+        services.AddSingleton(new ServiceBusClient(serviceBusConnectionString));
+        services.AddSingleton<IServiceBusPublisher, ServiceBusPublisher>();
+
+        // Owner mapping (FF User.Id → Partner3 id_owner)
+        services.AddSingleton<IOwnerMappingService>(new OwnerMappingService(ownerMappingOptions));
 
         return services;
     }

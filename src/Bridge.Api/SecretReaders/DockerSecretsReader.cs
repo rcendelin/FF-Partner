@@ -10,6 +10,21 @@ public static class DockerSecretsReader
 
     public static string Read(string secretName, IConfiguration configuration, string? configKey = null)
     {
+        var value = TryRead(secretName, configuration, configKey);
+        if (value is not null)
+            return value;
+
+        var key = configKey ?? secretName;
+        throw new InvalidOperationException(
+            $"Secret '{secretName}' nebyl nalezen v Docker Secrets ani v konfiguraci (klíč: '{key}').");
+    }
+
+    /// <summary>
+    /// Jako Read, ale vrátí null místo výjimky pokud secret není nalezen.
+    /// Vhodné pro volitelné secret (např. connection strings pro DEV/test prostředí).
+    /// </summary>
+    public static string? TryRead(string secretName, IConfiguration configuration, string? configKey = null)
+    {
         // 1. Docker Secret (produkce)
         var secretFile = Path.Combine(DockerSecretsPath, secretName);
         if (File.Exists(secretFile))
@@ -18,11 +33,7 @@ public static class DockerSecretsReader
         // 2. Fallback na konfiguraci (DEV/testování)
         var key = configKey ?? secretName;
         var value = configuration[key];
-        if (!string.IsNullOrWhiteSpace(value))
-            return value;
-
-        throw new InvalidOperationException(
-            $"Secret '{secretName}' nebyl nalezen v Docker Secrets ani v konfiguraci (klíč: '{key}').");
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     public static IReadOnlyDictionary<string, string> ReadPartnerConnectionStrings(
