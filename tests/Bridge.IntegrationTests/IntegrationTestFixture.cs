@@ -1,6 +1,7 @@
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner;
 using Bridge.Infrastructure.Partner.Repositories;
+using Bridge.Infrastructure.Polling;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Caching.Memory;
@@ -27,13 +28,16 @@ namespace Bridge.IntegrationTests;
 ///   proti produkčnímu prostředí pro validaci migrace, ale provádí pouze SELECT.
 ///
 /// Testy používají unikátní Guid jako ff_company_id pro izolaci testovacích dat.
-/// DisposeAsync provede cleanup všech testovacích záznamů (DELETE WHERE ff_company_id IN ...).
+/// DisposeAsync provede cleanup všech testovacích záznamů (DELETE WHERE ... IN ...).
 /// </summary>
 public sealed class IntegrationTestFixture : IAsyncLifetime
 {
     // ConcurrentBag je thread-safe — chrání před race condition při paralelním běhu testů
     private readonly ConcurrentBag<(Guid FfCompanyId, string Region)> _insertedClients = [];
     private readonly ConcurrentBag<Guid> _insertedMappings = [];
+    private readonly ConcurrentBag<string> _insertedWatermarks = [];
+    private readonly ConcurrentBag<long> _insertedSnapshotOrderIds = [];
+    private readonly ConcurrentBag<string> _insertedSyncLogOperations = [];
 
     // ── Connection strings (null = není k dispozici) ───────────────────────
 
@@ -64,7 +68,7 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
     public bool HasGaia => GaiaConn is not null;
     public bool HasAllInfra => HasPartnerDb && HasAzureSql && HasGaia;
 
-    // ── Factory metody ─────────────────────────────────────────────────────
+    // ── Factory metody — Fáze 1 ────────────────────────────────────────────
 
     public IPartnerDbConnectionFactory CreatePartnerFactory()
     {
@@ -89,6 +93,35 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
         return new BridgeMappingRepository(AzureSqlConn, new MemoryCache(new MemoryCacheOptions()));
     }
 
+    // ── Factory metody — Fáze 4 ────────────────────────────────────────────
+
+    public PollWatermarkRepository CreateWatermarkRepository()
+    {
+        if (AzureSqlConn is null)
+            throw new InvalidOperationException("BRIDGE_IT_AZURE_SQL_CONN není nastavena.");
+
+        return new PollWatermarkRepository(AzureSqlConn);
+    }
+
+    public OrderSnapshotRepository CreateSnapshotRepository()
+    {
+        if (AzureSqlConn is null)
+            throw new InvalidOperationException("BRIDGE_IT_AZURE_SQL_CONN není nastavena.");
+
+        return new OrderSnapshotRepository(AzureSqlConn);
+    }
+
+    public BridgeSyncLogRepository CreateSyncLogRepository()
+    {
+        if (AzureSqlConn is null)
+            throw new InvalidOperationException("BRIDGE_IT_AZURE_SQL_CONN není nastavena.");
+
+        return new BridgeSyncLogRepository(AzureSqlConn);
+    }
+
+    public OrderPollingRepository CreateOrderPollingRepository()
+        => new OrderPollingRepository(CreatePartnerFactory());
+
     // ── Testovací data — registrace pro cleanup ────────────────────────────
 
     /// <summary>
@@ -103,6 +136,27 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
     /// </summary>
     public void TrackMapping(Guid ffCompanyId)
         => _insertedMappings.Add(ffCompanyId);
+
+    /// <summary>
+    /// Zaregistruje poll_target pro cleanup v bridge_poll_watermark.
+    /// Volat PŘED každým UpsertAsync — aby cleanup proběhl i při selhání testu.
+    /// </summary>
+    public void TrackWatermark(string pollTarget)
+        => _insertedWatermarks.Add(pollTarget);
+
+    /// <summary>
+    /// Zaregistruje order_id pro cleanup v bridge_order_snapshot.
+    /// Testovací order IDs musí být záporná čísla (nezkolizují s reálnými tbl_order záznamy).
+    /// </summary>
+    public void TrackSnapshot(long orderId)
+        => _insertedSnapshotOrderIds.Add(orderId);
+
+    /// <summary>
+    /// Zaregistruje operation name pro cleanup v bridge_sync_log.
+    /// Používat jen pro testovací operace s unikátním prefixem (např. "it_backfill_xxxx").
+    /// </summary>
+    public void TrackSyncLogOperation(string operation)
+        => _insertedSyncLogOperations.Add(operation);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -158,29 +212,95 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
             }
         }
 
-        // Cleanup bridge_id_mapping — Azure SQL
-        if (HasAzureSql && !_insertedMappings.IsEmpty)
+        // Azure SQL cleanup — každý blok má vlastní connection (M3: prevence kaskádového selhání)
+        if (HasAzureSql)
         {
-            var mappingIds = _insertedMappings.Distinct().ToArray();
-
-            try
+            // Cleanup bridge_id_mapping
+            if (!_insertedMappings.IsEmpty)
             {
-                await using var sqlConn = new SqlConnection(AzureSqlConn);
-                await sqlConn.OpenAsync();
-
-                var placeholders = string.Join(",", mappingIds.Select((_, i) => $"@id{i}"));
-                var sql = $"DELETE FROM bridge_id_mapping WHERE ff_company_id IN ({placeholders})";
-                var param = new DynamicParameters();
-                for (var i = 0; i < mappingIds.Length; i++)
-                    param.Add($"id{i}", mappingIds[i]);
-
-                await sqlConn.ExecuteAsync(sql, param);
+                var mappingIds = _insertedMappings.Distinct().ToArray();
+                try
+                {
+                    await using var conn = new SqlConnection(AzureSqlConn);
+                    await conn.OpenAsync();
+                    var placeholders = string.Join(",", mappingIds.Select((_, i) => $"@id{i}"));
+                    var sql = $"DELETE FROM bridge_id_mapping WHERE ff_company_id IN ({placeholders})";
+                    var param = new DynamicParameters();
+                    for (var i = 0; i < mappingIds.Length; i++)
+                        param.Add($"id{i}", mappingIds[i]);
+                    await conn.ExecuteAsync(sql, param);
+                }
+                catch (Exception ex)
+                {
+                    await Console.Error.WriteLineAsync(
+                        $"[IntegrationTestFixture] Cleanup bridge_id_mapping selhal: {ex.Message}.");
+                }
             }
-            catch (Exception ex)
+
+            // Cleanup bridge_poll_watermark
+            if (!_insertedWatermarks.IsEmpty)
             {
-                await Console.Error.WriteLineAsync(
-                    $"[IntegrationTestFixture] Cleanup bridge_id_mapping selhal: {ex.Message}. " +
-                    $"Testovací data mohou zůstat v Azure SQL.");
+                var targets = _insertedWatermarks.Distinct().ToArray();
+                try
+                {
+                    await using var conn = new SqlConnection(AzureSqlConn);
+                    await conn.OpenAsync();
+                    var placeholders = string.Join(",", targets.Select((_, i) => $"@t{i}"));
+                    var sql = $"DELETE FROM bridge_poll_watermark WHERE poll_target IN ({placeholders})";
+                    var param = new DynamicParameters();
+                    for (var i = 0; i < targets.Length; i++)
+                        param.Add($"t{i}", targets[i]);
+                    await conn.ExecuteAsync(sql, param);
+                }
+                catch (Exception ex)
+                {
+                    await Console.Error.WriteLineAsync(
+                        $"[IntegrationTestFixture] Cleanup bridge_poll_watermark selhal: {ex.Message}.");
+                }
+            }
+
+            // Cleanup bridge_order_snapshot — záporná order_id jsou vždy testovací
+            if (!_insertedSnapshotOrderIds.IsEmpty)
+            {
+                var orderIds = _insertedSnapshotOrderIds.Distinct().ToArray();
+                try
+                {
+                    await using var conn = new SqlConnection(AzureSqlConn);
+                    await conn.OpenAsync();
+                    var placeholders = string.Join(",", orderIds.Select((_, i) => $"@o{i}"));
+                    var sql = $"DELETE FROM bridge_order_snapshot WHERE order_id IN ({placeholders})";
+                    var param = new DynamicParameters();
+                    for (var i = 0; i < orderIds.Length; i++)
+                        param.Add($"o{i}", orderIds[i]);
+                    await conn.ExecuteAsync(sql, param);
+                }
+                catch (Exception ex)
+                {
+                    await Console.Error.WriteLineAsync(
+                        $"[IntegrationTestFixture] Cleanup bridge_order_snapshot selhal: {ex.Message}.");
+                }
+            }
+
+            // Cleanup bridge_sync_log — pouze pro testovací operace (unikátní prefixované názvy)
+            if (!_insertedSyncLogOperations.IsEmpty)
+            {
+                var operations = _insertedSyncLogOperations.Distinct().ToArray();
+                try
+                {
+                    await using var conn = new SqlConnection(AzureSqlConn);
+                    await conn.OpenAsync();
+                    var placeholders = string.Join(",", operations.Select((_, i) => $"@op{i}"));
+                    var sql = $"DELETE FROM bridge_sync_log WHERE operation IN ({placeholders})";
+                    var param = new DynamicParameters();
+                    for (var i = 0; i < operations.Length; i++)
+                        param.Add($"op{i}", operations[i]);
+                    await conn.ExecuteAsync(sql, param);
+                }
+                catch (Exception ex)
+                {
+                    await Console.Error.WriteLineAsync(
+                        $"[IntegrationTestFixture] Cleanup bridge_sync_log selhal: {ex.Message}.");
+                }
             }
         }
     }
