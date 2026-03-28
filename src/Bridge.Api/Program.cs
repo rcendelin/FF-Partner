@@ -4,8 +4,10 @@ using Bridge.Api.Endpoints;
 using Bridge.Api.Middleware;
 using Bridge.Api.Sagas;
 using Bridge.Api.SecretReaders;
+using Bridge.Api.Telemetry;
 using Bridge.Application.Services;
 using Bridge.Infrastructure;
+using Microsoft.ApplicationInsights.Extensibility;
 using Serilog;
 using Serilog.Events;
 
@@ -22,19 +24,37 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
-    builder.Host.UseSerilog((context, services, configuration) => configuration
-        .ReadFrom.Configuration(context.Configuration)
-        .ReadFrom.Services(services)
-        .Enrich.FromLogContext()
-        .WriteTo.Console(outputTemplate:
-            "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}"));
-
     // Application Insights — pouze pokud je connection string nakonfigurován
     var appInsightsConnection = builder.Configuration["ApplicationInsights:ConnectionString"];
     if (!string.IsNullOrWhiteSpace(appInsightsConnection))
     {
         builder.Services.AddApplicationInsightsTelemetry();
+        builder.Services.AddSingleton<IBridgeMetrics, BridgeMetrics>();
     }
+    else
+    {
+        // DEV / prostředí bez App Insights — no-op metriky
+        builder.Services.AddSingleton<IBridgeMetrics, NullBridgeMetrics>();
+    }
+
+    builder.Host.UseSerilog((context, services, configuration) =>
+    {
+        configuration
+            .ReadFrom.Configuration(context.Configuration)
+            .ReadFrom.Services(services)
+            .Enrich.FromLogContext()
+            .WriteTo.Console(outputTemplate:
+                "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
+
+        // App Insights Serilog sink — posílá strukturované logy do Application Insights
+        var aiConn = context.Configuration["ApplicationInsights:ConnectionString"];
+        if (!string.IsNullOrWhiteSpace(aiConn))
+        {
+            configuration.WriteTo.ApplicationInsights(
+                services.GetRequiredService<TelemetryConfiguration>(),
+                TelemetryConverter.Traces);
+        }
+    });
 
     // Swagger pouze v DEV prostředí
     if (builder.Environment.IsDevelopment())

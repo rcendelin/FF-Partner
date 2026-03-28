@@ -1,5 +1,6 @@
 using Azure.Messaging.ServiceBus;
 using Bridge.Api.Sagas;
+using Bridge.Api.Telemetry;
 using Bridge.Application.Interfaces;
 using Bridge.Application.Services;
 using Bridge.Domain.Enums;
@@ -12,6 +13,7 @@ using Bridge.Infrastructure.Partner.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Bridge.Api.Consumers;
@@ -38,6 +40,7 @@ public sealed class CompanySyncConsumer : BackgroundService
     private readonly IBridgeMappingRepository _mappingRepo;
     private readonly ISyncLogRepository _syncLog;
     private readonly IOwnerMappingService _ownerMapping;
+    private readonly IBridgeMetrics _metrics;
     private readonly ILogger<CompanySyncConsumer> _logger;
     private readonly string _topicName;
     private readonly string _subscriptionName;
@@ -49,6 +52,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         IBridgeMappingRepository mappingRepo,
         ISyncLogRepository syncLog,
         IOwnerMappingService ownerMapping,
+        IBridgeMetrics metrics,
         IConfiguration configuration,
         ILogger<CompanySyncConsumer> logger)
     {
@@ -58,6 +62,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
         _ownerMapping = ownerMapping;
+        _metrics = metrics;
         _topicName = configuration["ServiceBus:CompanySyncTopic"] ?? "ff.company.sync";
         _subscriptionName = configuration["ServiceBus:SubscriptionName"] ?? "bridge-main";
         _logger = logger;
@@ -96,6 +101,10 @@ public sealed class CompanySyncConsumer : BackgroundService
 
     private async Task HandleMessageAsync(ProcessMessageEventArgs args)
     {
+        // CorrelationId propaguje MessageId do všech structured log zápisů v rámci zpracování
+        using var _ = CorrelationContext.Push(args.Message.MessageId);
+
+        var sw = Stopwatch.StartNew();
         var ct = args.CancellationToken;
         CompanySyncMessage? message = null;
 
@@ -135,6 +144,12 @@ public sealed class CompanySyncConsumer : BackgroundService
 
             // CancellationToken.None — settlement musí proběhnout i při shutdown
             await args.CompleteMessageAsync(args.Message, CancellationToken.None);
+
+            sw.Stop();
+            _metrics.TrackSyncSuccess(
+                message.Action.ToLowerInvariant(),
+                message.CountryCode ?? "unknown",
+                sw.Elapsed);
         }
         catch (JsonException ex)
         {
@@ -142,6 +157,7 @@ public sealed class CompanySyncConsumer : BackgroundService
             _logger.LogError(ex,
                 "Malformovaný JSON v CompanySyncMessage {MessageId} — dead-letter",
                 args.Message.MessageId);
+            _metrics.TrackSyncError("deserialize", "unknown", "MALFORMED_JSON");
             await args.DeadLetterMessageAsync(args.Message,
                 deadLetterReason: "MALFORMED_JSON",
                 cancellationToken: CancellationToken.None);
@@ -152,6 +168,7 @@ public sealed class CompanySyncConsumer : BackgroundService
                 "Nepodporovaný region pro CompanyId={CompanyId}: {Msg}",
                 message?.CompanyId, ex.Message);
             var action = message?.Action?.ToLowerInvariant() ?? "unknown";
+            _metrics.TrackSyncError(action, message?.CountryCode ?? "unknown", "UNSUPPORTED_REGION");
             await PublishSyncFailedAsync(
                 message, args.Message.MessageId, "UNSUPPORTED_REGION", ex.Message, action, ct);
             await args.CompleteMessageAsync(args.Message, CancellationToken.None);
@@ -162,9 +179,10 @@ public sealed class CompanySyncConsumer : BackgroundService
                 "GeoValidation selhal pro CompanyId={CompanyId}: {Msg}",
                 message?.CompanyId, ex.Message);
             var action = message?.Action?.ToLowerInvariant() ?? "unknown";
+            var errCode = ex.ErrorCode.ToString().ToUpperInvariant();
+            _metrics.TrackSyncError(action, message?.CountryCode ?? "unknown", errCode);
             await PublishSyncFailedAsync(
-                message, args.Message.MessageId,
-                ex.ErrorCode.ToString().ToUpperInvariant(), ex.Message, action, ct);
+                message, args.Message.MessageId, errCode, ex.Message, action, ct);
             await args.CompleteMessageAsync(args.Message, CancellationToken.None);
         }
         catch (Exception ex)
@@ -172,6 +190,10 @@ public sealed class CompanySyncConsumer : BackgroundService
             _logger.LogError(ex,
                 "Transientní chyba při zpracování zprávy {MessageId} — abandon pro retry",
                 args.Message.MessageId);
+            _metrics.TrackSyncError(
+                message?.Action?.ToLowerInvariant() ?? "unknown",
+                message?.CountryCode ?? "unknown",
+                "TRANSIENT_ERROR");
             // CancellationToken.None — abandon musí proběhnout i při shutdown
             await args.AbandonMessageAsync(args.Message, cancellationToken: CancellationToken.None);
         }

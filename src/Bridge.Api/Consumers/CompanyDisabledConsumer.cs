@@ -1,4 +1,5 @@
 using Azure.Messaging.ServiceBus;
+using Bridge.Api.Telemetry;
 using Bridge.Application.Interfaces;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
@@ -7,6 +8,7 @@ using Bridge.Infrastructure.Partner.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace Bridge.Api.Consumers;
@@ -33,6 +35,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
     private readonly ISyncLogRepository _syncLog;
+    private readonly IBridgeMetrics _metrics;
     private readonly ILogger<CompanyDisabledConsumer> _logger;
     private readonly string _topicName;
     private readonly string _subscriptionName;
@@ -43,6 +46,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
         ISyncLogRepository syncLog,
+        IBridgeMetrics metrics,
         IConfiguration configuration,
         ILogger<CompanyDisabledConsumer> logger)
     {
@@ -51,6 +55,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
+        _metrics = metrics;
         _topicName = configuration["ServiceBus:CompanyDisabledTopic"] ?? "ff.company.disabled";
         _subscriptionName = configuration["ServiceBus:SubscriptionName"] ?? "bridge-main";
         _logger = logger;
@@ -89,6 +94,10 @@ public sealed class CompanyDisabledConsumer : BackgroundService
 
     private async Task HandleMessageAsync(ProcessMessageEventArgs args)
     {
+        // CorrelationId propaguje MessageId do všech structured log zápisů v rámci zpracování
+        using var _ = CorrelationContext.Push(args.Message.MessageId);
+
+        var sw = Stopwatch.StartNew();
         var ct = args.CancellationToken;
         CompanyDisabledMessage? message = null;
 
@@ -102,6 +111,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
                 _logger.LogError(
                     "Deserializace CompanyDisabledMessage selhala (SB MessageId: {MessageId})",
                     args.Message.MessageId);
+                _metrics.TrackSyncError("disable", "unknown", "DESERIALIZATION_ERROR");
                 await args.DeadLetterMessageAsync(args.Message,
                     deadLetterReason: "DESERIALIZATION_ERROR",
                     cancellationToken: CancellationToken.None);
@@ -113,6 +123,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
                 _logger.LogError(
                     "CompanyDisabledMessage obsahuje Guid.Empty jako FfCompanyId (SB MessageId: {MessageId}) — dead-letter",
                     args.Message.MessageId);
+                _metrics.TrackSyncError("disable", "unknown", "INVALID_MESSAGE");
                 await args.DeadLetterMessageAsync(args.Message,
                     deadLetterReason: "INVALID_MESSAGE",
                     cancellationToken: CancellationToken.None);
@@ -123,6 +134,9 @@ public sealed class CompanyDisabledConsumer : BackgroundService
 
             // CancellationToken.None — settlement musí proběhnout i při shutdown
             await args.CompleteMessageAsync(args.Message, CancellationToken.None);
+
+            sw.Stop();
+            _metrics.TrackSyncSuccess("disable", "unknown", sw.Elapsed);
         }
         catch (JsonException ex)
         {
@@ -130,6 +144,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
             _logger.LogError(ex,
                 "Malformovaný JSON v CompanyDisabledMessage {MessageId} — dead-letter",
                 args.Message.MessageId);
+            _metrics.TrackSyncError("disable", "unknown", "MALFORMED_JSON");
             await args.DeadLetterMessageAsync(args.Message,
                 deadLetterReason: "MALFORMED_JSON",
                 cancellationToken: CancellationToken.None);
@@ -140,6 +155,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
             _logger.LogError(ex,
                 "Přechodná chyba při zpracování CompanyDisabledMessage {MessageId} — abandon pro retry",
                 args.Message.MessageId);
+            _metrics.TrackSyncError("disable", "unknown", "TRANSIENT_ERROR");
             await args.AbandonMessageAsync(args.Message, cancellationToken: CancellationToken.None);
         }
     }
@@ -156,6 +172,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
             _logger.LogWarning(
                 "DISABLE ignorován — žádný mapping pro CompanyId={CompanyId}. Firma nebyla dříve synced.",
                 message.FfCompanyId);
+            _metrics.TrackSyncError("disable", "unknown", "NO_MAPPING");
             await PublishDisableFailedAsync(message, sbMessageId, "NO_MAPPING",
                 $"Mapping pro CompanyId={message.FfCompanyId} neexistuje.");
             return;
@@ -182,6 +199,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
                 "DISABLE: tbl_client id={PartnerId} v regionu {Region} nenalezen — " +
                 "záznam mohl být odstraněn manuálně.",
                 mapping.PartnerClientId, mapping.PartnerRegion);
+            _metrics.TrackSyncError("disable", mapping.PartnerRegion, "CLIENT_NOT_FOUND");
             await PublishDisableFailedAsync(message, sbMessageId, "CLIENT_NOT_FOUND",
                 $"Klient id={mapping.PartnerClientId} nenalezen v regionu {mapping.PartnerRegion}.");
             return;
