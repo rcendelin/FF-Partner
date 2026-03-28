@@ -1,9 +1,10 @@
+using Bridge.Application.Interfaces;
 using Dapper;
 using Microsoft.Data.SqlClient;
 
 namespace Bridge.Infrastructure.Mapping;
 
-public sealed class BridgeSyncLogRepository : IBridgeSyncLogRepository
+public sealed class BridgeSyncLogRepository : ISyncLogRepository
 {
     private readonly string _connectionString;
 
