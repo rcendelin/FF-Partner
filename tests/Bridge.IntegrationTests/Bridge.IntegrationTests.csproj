@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!--
+      Integracni testy se NESPOUSTEJI v CI bez zive infrastruktury.
+      Testy se preskoci automaticky kdyz env promenne nejsou nastaveny.
+
+      Spusteni lokalne: nastavit env promenne BRIDGE_IT_PARTNER_CZ_CONN,
+      BRIDGE_IT_PARTNER_PL_CONN, BRIDGE_IT_AZURE_SQL_CONN, BRIDGE_IT_GAIA_CONN
+      a spustit: dotnet test tests/Bridge.IntegrationTests -filter Category=Integration
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Dapper" Version="2.1.72" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.0" />
+<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="MySqlConnector" Version="2.5.0" />
+    <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Bridge.Application\Bridge.Application.csproj" />
+    <ProjectReference Include="..\..\src\Bridge.Domain\Bridge.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Bridge.Infrastructure\Bridge.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

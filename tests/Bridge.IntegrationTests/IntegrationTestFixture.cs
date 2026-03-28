@@ -1,0 +1,187 @@
+using Bridge.Infrastructure.Mapping;
+using Bridge.Infrastructure.Partner;
+using Bridge.Infrastructure.Partner.Repositories;
+using Dapper;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Caching.Memory;
+using MySqlConnector;
+using System.Collections.Concurrent;
+
+namespace Bridge.IntegrationTests;
+
+/// <summary>
+/// Sdílená fixture pro integrační testy — spravuje připojení k DB a cleanup.
+///
+/// Connection strings čte z env proměnných (NIKDY z konfiguračního souboru ani kódu):
+///   BRIDGE_IT_PARTNER_CZ_CONN   — Partner3 CZ MySQL
+///   BRIDGE_IT_PARTNER_PL_CONN   — Partner3 PL MySQL
+///   BRIDGE_IT_PARTNER_HU_CONN   — Partner3 HU MySQL (volitelné)
+///   BRIDGE_IT_PARTNER_US_CONN   — Partner3 US MySQL (volitelné)
+///   BRIDGE_IT_AZURE_SQL_CONN    — Azure SQL (bridge_id_mapping, bridge_sync_log)
+///   BRIDGE_IT_GAIA_CONN         — GAIA MySQL (číselníky, read-only)
+///
+/// BEZPEČNOSTNÍ UPOZORNĚNÍ:
+///   Env proměnné BRIDGE_IT_* smí ukazovat POUZE na testovací / staging databázi.
+///   NIKDY nepřiřazovat produkční connection stringy těmto proměnným.
+///   GoNoGo testy (Category=GoNoGo) jsou výjimkou — ty se záměrně spouštějí
+///   proti produkčnímu prostředí pro validaci migrace, ale provádí pouze SELECT.
+///
+/// Testy používají unikátní Guid jako ff_company_id pro izolaci testovacích dat.
+/// DisposeAsync provede cleanup všech testovacích záznamů (DELETE WHERE ff_company_id IN ...).
+/// </summary>
+public sealed class IntegrationTestFixture : IAsyncLifetime
+{
+    // ConcurrentBag je thread-safe — chrání před race condition při paralelním běhu testů
+    private readonly ConcurrentBag<(Guid FfCompanyId, string Region)> _insertedClients = [];
+    private readonly ConcurrentBag<Guid> _insertedMappings = [];
+
+    // ── Connection strings (null = není k dispozici) ───────────────────────
+
+    public string? PartnerCzConn { get; } =
+        Environment.GetEnvironmentVariable("BRIDGE_IT_PARTNER_CZ_CONN");
+
+    public string? PartnerPlConn { get; } =
+        Environment.GetEnvironmentVariable("BRIDGE_IT_PARTNER_PL_CONN");
+
+    public string? PartnerHuConn { get; } =
+        Environment.GetEnvironmentVariable("BRIDGE_IT_PARTNER_HU_CONN");
+
+    public string? PartnerUsConn { get; } =
+        Environment.GetEnvironmentVariable("BRIDGE_IT_PARTNER_US_CONN");
+
+    public string? AzureSqlConn { get; } =
+        Environment.GetEnvironmentVariable("BRIDGE_IT_AZURE_SQL_CONN");
+
+    public string? GaiaConn { get; } =
+        Environment.GetEnvironmentVariable("BRIDGE_IT_GAIA_CONN");
+
+    // ── Dostupnost infrastruktury ──────────────────────────────────────────
+
+    public bool HasPartnerCzDb => PartnerCzConn is not null;
+    public bool HasPartnerPlDb => PartnerPlConn is not null;
+    public bool HasPartnerDb => HasPartnerCzDb && HasPartnerPlDb;
+    public bool HasAzureSql => AzureSqlConn is not null;
+    public bool HasGaia => GaiaConn is not null;
+    public bool HasAllInfra => HasPartnerDb && HasAzureSql && HasGaia;
+
+    // ── Factory metody ─────────────────────────────────────────────────────
+
+    public IPartnerDbConnectionFactory CreatePartnerFactory()
+    {
+        var connStrings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (PartnerCzConn is not null) connStrings["cz"] = PartnerCzConn;
+        if (PartnerPlConn is not null) connStrings["pl"] = PartnerPlConn;
+        if (PartnerHuConn is not null) connStrings["hu"] = PartnerHuConn;
+        if (PartnerUsConn is not null) connStrings["us"] = PartnerUsConn;
+
+        return new PartnerDbConnectionFactory(connStrings);
+    }
+
+    public IPartnerClientRepository CreatePartnerClientRepository()
+        => new PartnerClientRepository(CreatePartnerFactory());
+
+    public BridgeMappingRepository CreateMappingRepository()
+    {
+        if (AzureSqlConn is null)
+            throw new InvalidOperationException("BRIDGE_IT_AZURE_SQL_CONN není nastavena.");
+
+        return new BridgeMappingRepository(AzureSqlConn, new MemoryCache(new MemoryCacheOptions()));
+    }
+
+    // ── Testovací data — registrace pro cleanup ────────────────────────────
+
+    /// <summary>
+    /// Zaregistruje ff_company_id pro cleanup po testu.
+    /// Volat vždy PŘED každým INSERT do tbl_client — aby cleanup proběhl i při selhání testu.
+    /// </summary>
+    public void TrackClient(Guid ffCompanyId, string region)
+        => _insertedClients.Add((ffCompanyId, region));
+
+    /// <summary>
+    /// Zaregistruje ff_company_id pro cleanup v bridge_id_mapping.
+    /// </summary>
+    public void TrackMapping(Guid ffCompanyId)
+        => _insertedMappings.Add(ffCompanyId);
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+    {
+        // Cleanup tbl_client — DELETE testovacích záznamů per region
+        // Každý cleanup blok je zabalený v try/catch — selhání jednoho bloku nezastaví ostatní
+        if (HasPartnerCzDb || HasPartnerPlDb)
+        {
+            var byRegion = _insertedClients
+                .GroupBy(x => x.Region, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var group in byRegion)
+            {
+                var region = group.Key;
+                var conn = region switch
+                {
+                    "cz" => PartnerCzConn,
+                    "pl" => PartnerPlConn,
+                    "hu" => PartnerHuConn,
+                    "us" => PartnerUsConn,
+                    _ => null
+                };
+
+                if (conn is null) continue;
+
+                var ids = group.Select(x => x.FfCompanyId.ToString()).Distinct().ToArray();
+                if (ids.Length == 0) continue;
+
+                try
+                {
+                    await using var mysqlConn = new MySqlConnection(conn);
+                    await mysqlConn.OpenAsync();
+
+                    // Parametrizovaný DELETE — placeholdery z indexů (ne z uživatelských dat)
+                    var placeholders = string.Join(",", ids.Select((_, i) => $"@id{i}"));
+                    var sql = $"DELETE FROM tbl_client WHERE ff_company_id IN ({placeholders})";
+                    var param = new DynamicParameters();
+                    for (var i = 0; i < ids.Length; i++)
+                        param.Add($"id{i}", ids[i]);
+
+                    await mysqlConn.ExecuteAsync(sql, param);
+                }
+                catch (Exception ex)
+                {
+                    // Cleanup selhání neblokuje ostatní regiony — logovat na stderr
+                    await Console.Error.WriteLineAsync(
+                        $"[IntegrationTestFixture] Cleanup selhal pro region '{region}': {ex.Message}. " +
+                        $"Testovací data mohou zůstat v DB pro ff_company_id: {string.Join(", ", ids)}");
+                }
+            }
+        }
+
+        // Cleanup bridge_id_mapping — Azure SQL
+        if (HasAzureSql && !_insertedMappings.IsEmpty)
+        {
+            var mappingIds = _insertedMappings.Distinct().ToArray();
+
+            try
+            {
+                await using var sqlConn = new SqlConnection(AzureSqlConn);
+                await sqlConn.OpenAsync();
+
+                var placeholders = string.Join(",", mappingIds.Select((_, i) => $"@id{i}"));
+                var sql = $"DELETE FROM bridge_id_mapping WHERE ff_company_id IN ({placeholders})";
+                var param = new DynamicParameters();
+                for (var i = 0; i < mappingIds.Length; i++)
+                    param.Add($"id{i}", mappingIds[i]);
+
+                await sqlConn.ExecuteAsync(sql, param);
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync(
+                    $"[IntegrationTestFixture] Cleanup bridge_id_mapping selhal: {ex.Message}. " +
+                    $"Testovací data mohou zůstat v Azure SQL.");
+            }
+        }
+    }
+}
