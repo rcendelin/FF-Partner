@@ -1,0 +1,10 @@
+{
+  "OwnerMapping": {
+    "DefaultOwnerId": 1,
+    "Mappings": {
+      "REPLACE-WITH-FF-USER-GUID-1": 10,
+      "REPLACE-WITH-FF-USER-GUID-2": 11,
+      "REPLACE-WITH-FF-USER-GUID-3": 12
+    }
+  }
+}

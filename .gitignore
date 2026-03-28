@@ -44,6 +44,7 @@ packages/
 secrets/
 *.secrets
 appsettings.Local.json
+appsettings.Development.json
 appsettings.Production.json
 .env
 .env.*
