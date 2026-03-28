@@ -95,6 +95,8 @@ try
 
         builder.Services.AddHostedService<CompanySyncConsumer>();
         builder.Services.AddHostedService<CompanyDisabledConsumer>();
+        builder.Services.AddHostedService<ContactUpdatedConsumer>();
+        builder.Services.AddHostedService<OwnerChangedConsumer>();
 
         // DLQ monitor — kontroluje dead-letter queue každých 5 minut, loguje Warning při depth > 0
         builder.Services.AddSingleton(new ServiceBusAdministrationClient(serviceBusConn));

@@ -251,6 +251,49 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
                 $"Nutný manuální zásah.");
     }
 
+    public async Task UpdateContactAsync(
+        int partnerId, string region, string? email, string? phone, CancellationToken ct = default)
+    {
+        await using var conn = _connectionFactory.CreateConnection(region);
+        await conn.OpenAsync(ct);
+
+        const string sql = """
+            UPDATE tbl_client SET
+                client_mail = @Email,
+                client_phone = @Phone,
+                last_ff_sync_at = @Now
+            WHERE idclient = @PartnerId
+            """;
+
+        var affected = await conn.ExecuteAsync(
+            sql, new { Email = email, Phone = phone, Now = DateTime.UtcNow, PartnerId = partnerId });
+
+        if (affected == 0)
+            throw new InvalidOperationException(
+                $"UpdateContactAsync: idclient={partnerId} nebyl nalezen v regionu {region}.");
+    }
+
+    public async Task UpdateOwnerAsync(
+        int partnerId, string region, int ownerId, CancellationToken ct = default)
+    {
+        await using var conn = _connectionFactory.CreateConnection(region);
+        await conn.OpenAsync(ct);
+
+        const string sql = """
+            UPDATE tbl_client SET
+                id_owner = @OwnerId,
+                last_ff_sync_at = @Now
+            WHERE idclient = @PartnerId
+            """;
+
+        var affected = await conn.ExecuteAsync(
+            sql, new { OwnerId = ownerId, Now = DateTime.UtcNow, PartnerId = partnerId });
+
+        if (affected == 0)
+            throw new InvalidOperationException(
+                $"UpdateOwnerAsync: idclient={partnerId} nebyl nalezen v regionu {region}.");
+    }
+
     private static PartnerClient MapToDomain(PartnerClientRow row) => new()
     {
         IdClient = row.idclient,
