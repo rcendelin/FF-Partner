@@ -13,6 +13,8 @@ services:
       # Pouze interní síť XTuning — ne 0.0.0.0
       - "172.24.0.1:8080:8080"
     secrets:
+      - azure_sql_conn
+      - gaia_conn
       - partner_cz_conn
       - partner_pl_conn
       - partner_hu_conn
@@ -33,6 +35,10 @@ services:
         max-file: "5"
 
 secrets:
+  azure_sql_conn:
+    file: ./secrets/azure_sql_conn.txt
+  gaia_conn:
+    file: ./secrets/gaia_conn.txt
   partner_cz_conn:
     file: ./secrets/partner_cz_conn.txt
   partner_pl_conn:
