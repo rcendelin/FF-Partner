@@ -230,7 +230,10 @@ public sealed class PartnerClientRepository : IPartnerClientRepository
         DataOwner = Enum.TryParse<Domain.Enums.DataOwner>(row.data_owner, ignoreCase: true, out var owner)
             ? owner
             : Domain.Enums.DataOwner.Pipedrive,
-        LastFfSyncAt = row.last_ff_sync_at
+        // SpecifyKind: MySQL DATETIME nemá timezone info; Bridge vždy zapisuje UTC → interpretovat jako UTC
+        LastFfSyncAt = row.last_ff_sync_at.HasValue
+            ? DateTime.SpecifyKind(row.last_ff_sync_at.Value, DateTimeKind.Utc)
+            : null
     };
 
     // Pomocný record pro Dapper mapping — odpovídá sloupcům tbl_client

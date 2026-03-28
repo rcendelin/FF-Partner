@@ -115,18 +115,23 @@ public sealed class CompanySyncConsumer : BackgroundService
                 return;
             }
 
-            if (!string.Equals(message.Action, "Create", StringComparison.OrdinalIgnoreCase))
+            await using var scope = _scopeFactory.CreateAsyncScope();
+
+            if (string.Equals(message.Action, "Create", StringComparison.OrdinalIgnoreCase))
             {
-                // Action=Update bude implementováno v F1-06; zprávu complete aby se nereplikovaly
-                _logger.LogDebug(
-                    "Přeskakuji Action={Action} pro CompanyId={CompanyId} (F1-06)",
+                await ProcessCreateAsync(scope.ServiceProvider, message, args.Message.MessageId, ct);
+            }
+            else if (string.Equals(message.Action, "Update", StringComparison.OrdinalIgnoreCase))
+            {
+                await ProcessUpdateAsync(scope.ServiceProvider, message, args.Message.MessageId, ct);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Neznámá action '{Action}' pro CompanyId={CompanyId} — zpráva se přeskočí",
                     message.Action, message.CompanyId);
-                await args.CompleteMessageAsync(args.Message, CancellationToken.None);
-                return;
             }
 
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            await ProcessCreateAsync(scope.ServiceProvider, message, args.Message.MessageId, ct);
             // CancellationToken.None — settlement musí proběhnout i při shutdown
             await args.CompleteMessageAsync(args.Message, CancellationToken.None);
         }
@@ -145,8 +150,9 @@ public sealed class CompanySyncConsumer : BackgroundService
             _logger.LogWarning(
                 "Nepodporovaný region pro CompanyId={CompanyId}: {Msg}",
                 message?.CompanyId, ex.Message);
+            var action = message?.Action?.ToLowerInvariant() ?? "unknown";
             await PublishSyncFailedAsync(
-                message, args.Message.MessageId, "UNSUPPORTED_REGION", ex.Message, ct);
+                message, args.Message.MessageId, "UNSUPPORTED_REGION", ex.Message, action, ct);
             await args.CompleteMessageAsync(args.Message, CancellationToken.None);
         }
         catch (GeoValidationException ex)
@@ -154,9 +160,10 @@ public sealed class CompanySyncConsumer : BackgroundService
             _logger.LogWarning(
                 "GeoValidation selhal pro CompanyId={CompanyId}: {Msg}",
                 message?.CompanyId, ex.Message);
+            var action = message?.Action?.ToLowerInvariant() ?? "unknown";
             await PublishSyncFailedAsync(
                 message, args.Message.MessageId,
-                ex.ErrorCode.ToString().ToUpperInvariant(), ex.Message, ct);
+                ex.ErrorCode.ToString().ToUpperInvariant(), ex.Message, action, ct);
             await args.CompleteMessageAsync(args.Message, CancellationToken.None);
         }
         catch (Exception ex)
@@ -303,11 +310,235 @@ public sealed class CompanySyncConsumer : BackgroundService
             message.CompanyId, partnerId, region);
     }
 
+    private async Task ProcessUpdateAsync(
+        IServiceProvider sp,
+        CompanySyncMessage message,
+        string sbMessageId,
+        CancellationToken ct)
+    {
+        // 1. Lookup mapping — firma musí být v bridge_id_mapping
+        var mapping = await _mappingRepo.GetMappingAsync(message.CompanyId, ct);
+        if (mapping is null)
+        {
+            _logger.LogWarning(
+                "UPDATE ignorován — žádný mapping pro CompanyId={CompanyId}. Firma nebyla dříve synced.",
+                message.CompanyId);
+            await PublishSyncFailedAsync(message, sbMessageId, "NO_MAPPING",
+                $"Mapping pro CompanyId={message.CompanyId} neexistuje.", "update", ct);
+            return;
+        }
+
+        var region = mapping.PartnerRegion;
+        var partnerRepo = sp.GetRequiredService<IPartnerClientRepository>();
+        var geoService = sp.GetRequiredService<IGeoValidationService>();
+
+        // 2. Načíst existující záznam z Partner DB
+        var existingClient = await partnerRepo.GetByPartnerIdAsync(mapping.PartnerClientId, region, ct);
+        if (existingClient is null)
+        {
+            _logger.LogWarning(
+                "UPDATE ignorován — tbl_client id={PartnerId} v regionu {Region} neexistuje (stale mapping).",
+                mapping.PartnerClientId, region);
+            await PublishSyncFailedAsync(message, sbMessageId, "ORPHANED_MAPPING",
+                $"tbl_client id={mapping.PartnerClientId} v regionu {region} nenalezen.", "update", ct);
+            return;
+        }
+
+        // 3. Conflict detection dle CLAUDE.md sekce 10
+        // Stale message guard: pokud Bridge zapsal DO Partner DB VÍCE NEŽ 5 MINUT po odeslání zprávy,
+        // zpráva dorazila out-of-order (novější sync ji předběhl) → přeskočit.
+        // Tolerance 5 min kryje clock skew. Podmínka: lastFfSyncAt > sentAt + 5min
+        if (existingClient.LastFfSyncAt.HasValue &&
+            existingClient.LastFfSyncAt.Value > message.SentAt.UtcDateTime.AddMinutes(5))
+        {
+            _logger.LogWarning(
+                "Conflict pro CompanyId={CompanyId} (PartnerId={PartnerId}) — záznam v Partner DB " +
+                "je novější než zpráva + tolerance 5 min (last_ff_sync_at={Existing}, SentAt={SentAt}). " +
+                "Zpráva je stale — zápis přeskočen.",
+                message.CompanyId, mapping.PartnerClientId,
+                existingClient.LastFfSyncAt, message.SentAt);
+
+            try
+            {
+                await _publisher.PublishAsync("bridge.company.conflict", new CompanyConflictMessage
+                {
+                    MessageId = Guid.NewGuid().ToString(),
+                    SentAt = DateTimeOffset.UtcNow,
+                    FfCompanyId = message.CompanyId,
+                    PartnerClientId = mapping.PartnerClientId,
+                    PartnerRegion = region,
+                    ExistingLastSyncAt = new DateTimeOffset(existingClient.LastFfSyncAt.Value, TimeSpan.Zero),
+                    IncomingMessageSentAt = message.SentAt
+                }, sbMessageId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Nepodařilo se publikovat bridge.company.conflict pro CompanyId={CompanyId}",
+                    message.CompanyId);
+            }
+
+            // CancellationToken.None — log musí být zapsán i při shutdown
+            await _syncLog.WriteAsync(new SyncLogEntry
+            {
+                FfCompanyId = message.CompanyId,
+                PartnerClientId = mapping.PartnerClientId,
+                PartnerRegion = region,
+                Operation = "update",
+                ServiceBusMessageId = sbMessageId,
+                Status = "conflict",
+                ErrorMessage = "Stale message — novější sync detekován, zápis přeskočen.",
+                Severity = "Warning"
+            }, CancellationToken.None);
+
+            return;
+        }
+
+        // 4. Geo validace — neznámá země → výjimka; neznámé PSČ → null, sync pokračuje
+        var address = new AddressDto
+        {
+            CountryCode = message.CountryCode,
+            PostalCode = message.PostalCode,
+            City = message.City,
+            State = message.State,
+            County = message.County
+        };
+        var geo = await geoService.ValidateAsync(address, ct);
+
+        // Detekce změny regionu — UPDATE proběhne v existujícím regionu, přesun řeší F1-07 Saga
+        var newRegion = RegionRouter.ResolveRegion(message.CountryCode);
+        if (newRegion != region)
+        {
+            _logger.LogWarning(
+                "Firma CompanyId={CompanyId} změnila zemi na {CountryCode} (nový region: {NewRegion}, " +
+                "aktuální: {CurrentRegion}). Region migration (F1-07 Saga) je nutná. " +
+                "UPDATE proběhne v aktuálním regionu.",
+                message.CompanyId, message.CountryCode, newRegion, region);
+
+            // Audit trail: region_change musí být zaznamenán i při shutdown
+            await _syncLog.WriteAsync(new SyncLogEntry
+            {
+                FfCompanyId = message.CompanyId,
+                PartnerClientId = mapping.PartnerClientId,
+                PartnerRegion = region,
+                Operation = "region_change",
+                ServiceBusMessageId = sbMessageId,
+                Status = "warning",
+                ErrorMessage = $"CountryCode={message.CountryCode} → nový region={newRegion}, aktuální={region}. Čeká na F1-07 Saga.",
+                Severity = "Warning"
+            }, CancellationToken.None);
+        }
+
+        // 5. Mapování role + owner
+        var clientRight = Enum.TryParse<CompanyRole>(message.CompanyRole, ignoreCase: true, out var role)
+            ? MapCompanyRole(role)
+            : existingClient.ClientRight;  // zachovat existující pokud neznámá role
+
+        var ownerId = _ownerMapping.ResolveOwnerId(message.AssignedUserId)
+            ?? existingClient.IdOwner;     // zachovat existujícího ownera pokud není mapping
+
+        // 6. UPDATE v Partner DB
+        var now = DateTime.UtcNow;
+        existingClient.ClientFirm = message.CompanyName;
+        existingClient.ClientIc = message.Ico;
+        existingClient.ClientDic = message.Dic;
+        existingClient.ClientStreet = message.Street;
+        existingClient.ClientCity = geo.City;
+        existingClient.ClientPsc = message.PostalCode;
+        existingClient.ClientCountryId = geo.CountryId;
+        existingClient.ClientCountryShort = geo.CountryShort;
+        existingClient.ClientState = geo.State;
+        existingClient.ClientStateId = geo.StateId;
+        existingClient.ClientCounty = geo.County;
+        existingClient.ClientCountyId = geo.CountyId;
+        existingClient.ClientZipId = geo.ZipId;
+        existingClient.ClientPhone = message.PrimaryContactPhone;
+        existingClient.ClientMail = message.PrimaryContactEmail;
+        existingClient.ClientRight = clientRight;
+        existingClient.IdOwner = ownerId;
+        existingClient.FfSyncSource = "FF";
+        existingClient.DataOwner = DataOwner.FieldForce;
+        existingClient.LastFfSyncAt = now;
+
+        await partnerRepo.UpdateAsync(existingClient, region, ct);
+
+        // 7. Aktualizovat mapping (last_sync_at, owner)
+        var updatedMapping = new IdMappingRecord
+        {
+            FfCompanyId = mapping.FfCompanyId,
+            PartnerClientId = mapping.PartnerClientId,
+            PartnerRegion = region,
+            EntityType = mapping.EntityType,
+            PipedriveId = mapping.PipedriveId,
+            FfUserId = message.AssignedUserId,
+            PartnerOwnerId = ownerId,
+            LastSyncAt = now,
+            LastSyncDirection = "ff_to_partner",
+            CreatedAt = mapping.CreatedAt,
+            UpdatedAt = now
+        };
+        // CRITICAL: UpdateMappingAsync selhání nesmí způsobit abandon (UpdateAsync již proběhl).
+        // Partner DB je zdrojem pravdy — mapping je pouze pomocný index. Logujeme warning, sync pokračuje.
+        try
+        {
+            await _mappingRepo.UpdateMappingAsync(updatedMapping, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Nepodařilo se aktualizovat bridge_id_mapping pro CompanyId={CompanyId} " +
+                "(PartnerId={PartnerId}). tbl_client byl aktualizován — mapping je stale. " +
+                "Bude opraven při příštím sync.",
+                message.CompanyId, mapping.PartnerClientId);
+
+            await _syncLog.WriteAsync(new SyncLogEntry
+            {
+                FfCompanyId = message.CompanyId,
+                PartnerClientId = mapping.PartnerClientId,
+                PartnerRegion = region,
+                Operation = "update",
+                ServiceBusMessageId = sbMessageId,
+                Status = "warning",
+                ErrorMessage = $"UpdateMappingAsync selhal: {ex.Message}. tbl_client aktualizován, mapping stale.",
+                Severity = "Warning"
+            }, CancellationToken.None);
+            // Pokračovat — zpráva bude completed, ne abandoned
+        }
+
+        // 8. Publish bridge.company.synced
+        await _publisher.PublishAsync("bridge.company.synced", new CompanySyncedResponse
+        {
+            MessageId = Guid.NewGuid().ToString(),
+            SentAt = DateTimeOffset.UtcNow,
+            FfCompanyId = message.CompanyId,
+            PartnerClientId = mapping.PartnerClientId,
+            PartnerRegion = region,
+            Action = "Update"
+        }, sbMessageId, ct);
+
+        // 9. Log úspěchu
+        await _syncLog.WriteAsync(new SyncLogEntry
+        {
+            FfCompanyId = message.CompanyId,
+            PartnerClientId = mapping.PartnerClientId,
+            PartnerRegion = region,
+            Operation = "update",
+            ServiceBusMessageId = sbMessageId,
+            Status = "success",
+            Severity = "Info"
+        }, ct);
+
+        _logger.LogInformation(
+            "UPDATE: FF CompanyId={CompanyId} → Partner ClientId={PartnerId}, region={Region}",
+            message.CompanyId, mapping.PartnerClientId, region);
+    }
+
     private async Task PublishSyncFailedAsync(
         CompanySyncMessage? message,
         string sbMessageId,
         string errorCode,
         string errorMsg,
+        string operation,
         CancellationToken ct)
     {
         var failed = new CompanySyncFailedMessage
@@ -322,7 +553,8 @@ public sealed class CompanySyncConsumer : BackgroundService
 
         try
         {
-            await _publisher.PublishAsync("bridge.company.sync-failed", failed, sbMessageId, ct);
+            // CancellationToken.None — terminální publish musí proběhnout i při shutdown
+            await _publisher.PublishAsync("bridge.company.sync-failed", failed, sbMessageId, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -335,7 +567,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         await _syncLog.WriteAsync(new SyncLogEntry
         {
             FfCompanyId = message?.CompanyId,
-            Operation = "create",
+            Operation = operation,
             ServiceBusMessageId = sbMessageId,
             Status = "failed",
             ErrorMessage = $"{errorCode}: {errorMsg}",
