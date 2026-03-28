@@ -28,6 +28,9 @@ public abstract class OrderPollerBase : BackgroundService
 
     private const short OrderStateCancelled = 30;
 
+    /// <summary>order_automat_close = -1 → GAIA processing error. Pouze logovat, nenotifikovat obchodníka (CLAUDE.md sekce 16).</summary>
+    private const sbyte GaiaAutomatCloseError = -1;
+
     protected readonly IServiceBusPublisher Publisher;
     protected readonly IPollWatermarkRepository WatermarkRepo;
     protected readonly IOrderSnapshotRepository SnapshotRepo;
@@ -188,7 +191,7 @@ public abstract class OrderPollerBase : BackgroundService
                 var mapping = await MappingRepo.GetMappingByPartnerClientAsync(order.IdClient, Region, ct);
                 if (mapping is not null)
                 {
-                    await PublishStateChangeEventsAsync(order, mapping, now, ct);
+                    await PublishStateChangeEventsAsync(order, mapping, now, existingHash!, ct);
                     stateChangeCount++;
                 }
             }
@@ -283,10 +286,38 @@ public abstract class OrderPollerBase : BackgroundService
         {
             await PublishOrderCancelledAsync(order, mapping, sentAt);
         }
+
+        // F4-07: nová objednávka v GAIA error stavu — logovat Warning bez podmínky PreviousHash
+        if (order.OrderAutomatClose == GaiaAutomatCloseError)
+        {
+            Logger.LogWarning(
+                "OrderPoller {Region}: GAIA processing error u nové objednávky idorder={OrderId} (order_automat_close=-1)",
+                Region, order.IdOrder);
+
+            try
+            {
+                await SyncLog.WriteAsync(new Application.Interfaces.SyncLogEntry
+                {
+                    Operation = "gaia_processing_error",
+                    Status = "warning",
+                    PartnerRegion = Region,
+                    PartnerClientId = order.IdClient,
+                    Severity = "Warning",
+                    PayloadJson = $"{{\"orderId\":{order.IdOrder},\"automatClose\":{order.OrderAutomatClose}}}"
+                }, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex,
+                    "OrderPoller {Region}: nepodařilo se zapsat GAIA warning log pro novou objednávku idorder={OrderId}",
+                    Region, order.IdOrder);
+            }
+        }
     }
 
     private async Task PublishStateChangeEventsAsync(
-        TblOrderRow order, IdMappingRecord mapping, DateTimeOffset sentAt, CancellationToken ct)
+        TblOrderRow order, IdMappingRecord mapping, DateTimeOffset sentAt,
+        string previousHash, CancellationToken ct)
     {
         try
         {
@@ -321,6 +352,38 @@ public abstract class OrderPollerBase : BackgroundService
         catch (Exception ex)
         {
             Logger.LogError(ex, "OrderPoller {Region}: nepodařilo se publikovat state-change event pro idorder={OrderId}", Region, order.IdOrder);
+        }
+
+        // F4-07: GAIA error detection — logovat Warning při PŘECHODU na order_automat_close = -1.
+        // Podmínka: nový stav má automat_close=-1 A předchozí hash nezakódoval automat_close=-1.
+        // Prevence duplicitního logu pokud jiné pole změní hash zatímco GAIA zůstává v chybě.
+        // Nenotifikovat obchodníka (CLAUDE.md sekce 16). Bez výjimky při selhání logu.
+        if (order.OrderAutomatClose == GaiaAutomatCloseError
+            && !PreviousHashHadGaiaError(previousHash, order))
+        {
+            // Logujeme pouze orderId — idClient je uložen v SyncLogEntry, ne v App Insights logu
+            Logger.LogWarning(
+                "OrderPoller {Region}: GAIA processing error pro idorder={OrderId} (order_automat_close=-1)",
+                Region, order.IdOrder);
+
+            try
+            {
+                await SyncLog.WriteAsync(new Application.Interfaces.SyncLogEntry
+                {
+                    Operation = "gaia_processing_error",
+                    Status = "warning",
+                    PartnerRegion = Region,
+                    PartnerClientId = order.IdClient,
+                    Severity = "Warning",
+                    PayloadJson = $"{{\"orderId\":{order.IdOrder},\"automatClose\":{order.OrderAutomatClose}}}"
+                }, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex,
+                    "OrderPoller {Region}: nepodařilo se zapsat GAIA warning log pro idorder={OrderId}",
+                    Region, order.IdOrder);
+            }
         }
     }
 
@@ -383,5 +446,28 @@ public abstract class OrderPollerBase : BackgroundService
         var input = $"{order.OrderState}|{order.OrderClose}|{order.OrderClosePay}|{order.OrderAutomatClose}|{order.OrderDeactive}";
         var bytes = MD5.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Zjistí, zda předchozí snapshot hash zakódoval GAIA error (automat_close = -1).
+    /// Porovnává předchozí hash s hashem aktuálního řádku ale se substituovanou hodnotou automat_close = -1.
+    /// Pokud se shodují, předchozí stav TAKÉ měl automat_close = -1 → nepublikovat duplicitní Warning.
+    /// </summary>
+    public static bool PreviousHashHadGaiaError(string previousHash, TblOrderRow currentOrder)
+    {
+        // Vytvoříme "testovací" řádek shodný s aktuálním, ale s automat_close = -1
+        // Pokud výsledný hash == previousHash, pak předchozí stav měl stejné pole = -1
+        var testRow = new TblOrderRow
+        {
+            IdOrder = currentOrder.IdOrder,
+            IdClient = currentOrder.IdClient,
+            OrderDateStart = currentOrder.OrderDateStart,
+            OrderState = currentOrder.OrderState,
+            OrderClose = currentOrder.OrderClose,
+            OrderClosePay = currentOrder.OrderClosePay,
+            OrderAutomatClose = GaiaAutomatCloseError,  // substituujeme -1
+            OrderDeactive = currentOrder.OrderDeactive
+        };
+        return ComputeStateHash(testRow) == previousHash;
     }
 }
