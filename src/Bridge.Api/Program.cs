@@ -1,3 +1,4 @@
+using Azure.Messaging.ServiceBus.Administration;
 using Bridge.Api.Consumers;
 using Bridge.Api.Endpoints;
 using Bridge.Api.Sagas;
@@ -67,6 +68,11 @@ try
             ownerMappingOptions: ownerMappingOptions);
 
         builder.Services.AddHostedService<CompanySyncConsumer>();
+        builder.Services.AddHostedService<CompanyDisabledConsumer>();
+
+        // DLQ monitor — kontroluje dead-letter queue každých 5 minut, loguje Warning při depth > 0
+        builder.Services.AddSingleton(new ServiceBusAdministrationClient(serviceBusConn));
+        builder.Services.AddHostedService<DlqMonitorService>();
 
         // Saga — transient (nové instance per použití)
         builder.Services.AddTransient<MoveClientToRegionSaga>();
