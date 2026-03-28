@@ -1,8 +1,8 @@
 using Azure.Messaging.ServiceBus.Administration;
 using Bridge.Api.Consumers;
 using Bridge.Api.Endpoints;
-
 using Bridge.Api.Middleware;
+using Bridge.Api.Pollers;
 using Bridge.Api.Sagas;
 using Bridge.Api.SecretReaders;
 using Bridge.Api.Telemetry;
@@ -109,7 +109,14 @@ try
         // SagaRecoveryService — spustí se jednou při startu, detekuje nedokončené ságy
         builder.Services.AddHostedService<SagaRecoveryService>();
 
-        Log.Information("Infrastructure, Service Bus konzumenti a Saga zaregistrovány");
+        // Order pollery — 4 nezávislé BackgroundService per region (Fáze 4)
+        // Spouštějí se se 30s zpožděním po startu, pollují každých 5 minut
+        builder.Services.AddHostedService<OrderPollerCz>();
+        builder.Services.AddHostedService<OrderPollerPl>();
+        builder.Services.AddHostedService<OrderPollerHu>();
+        builder.Services.AddHostedService<OrderPollerUs>();
+
+        Log.Information("Infrastructure, Service Bus konzumenti, Saga a Order pollery zaregistrovány");
     }
     else
     {

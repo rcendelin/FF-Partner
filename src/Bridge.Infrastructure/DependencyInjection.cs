@@ -6,6 +6,7 @@ using Bridge.Infrastructure.Gaia.Repositories;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner;
 using Bridge.Infrastructure.Partner.Repositories;
+using Bridge.Infrastructure.Polling;
 using Bridge.Infrastructure.ServiceBus;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -63,6 +64,12 @@ public static class DependencyInjection
 
         // Owner mapping (FF User.Id → Partner3 id_owner)
         services.AddSingleton<IOwnerMappingService>(new OwnerMappingService(ownerMappingOptions));
+
+        // Polling infrastruktura — watermark + snapshot (Azure SQL)
+        services.AddSingleton<IPollWatermarkRepository>(
+            _ => new PollWatermarkRepository(azureSqlConnectionString));
+        services.AddSingleton<IOrderSnapshotRepository>(
+            _ => new OrderSnapshotRepository(azureSqlConnectionString));
 
         return services;
     }
