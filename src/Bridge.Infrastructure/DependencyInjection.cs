@@ -6,6 +6,7 @@ using Bridge.Infrastructure.Gaia.Repositories;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner;
 using Bridge.Infrastructure.Partner.Repositories;
+using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Polling;
 using Bridge.Infrastructure.ServiceBus;
 using Microsoft.Extensions.Caching.Memory;
@@ -39,6 +40,9 @@ public static class DependencyInjection
 
         services.AddSingleton<ISyncLogRepository>(
             _ => new BridgeSyncLogRepository(azureSqlConnectionString));
+
+        // PartnerSyncLog writer — writes directly to FieldForce's Azure SQL
+        services.AddSingleton<SyncLogWriter>();
 
         // GAIA číselníky (read-only)
         services.AddSingleton<IGaiaDbConnectionFactory>(

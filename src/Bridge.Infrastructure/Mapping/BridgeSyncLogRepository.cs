@@ -15,6 +15,7 @@ namespace Bridge.Infrastructure.Mapping;
 /// Poznámka k INSERT: SyncLogEntry.CreatedAt má default = DateTime.UtcNow,
 /// takže se při každém new SyncLogEntry { ... } automaticky nastaví na aktuální čas.
 /// </summary>
+[Obsolete("Replaced by PartnerSyncLog in FieldForce DB")]
 public sealed class BridgeSyncLogRepository : ISyncLogRepository
 {
     private readonly string _connectionString;

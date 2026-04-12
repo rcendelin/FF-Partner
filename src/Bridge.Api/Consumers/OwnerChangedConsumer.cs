@@ -4,6 +4,7 @@ using Bridge.Application.Interfaces;
 using Bridge.Application.Services;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
+using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner.Repositories;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,6 +37,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
     private readonly ISyncLogRepository _syncLog;
+    private readonly SyncLogWriter _syncLogWriter;
     private readonly IOwnerMappingService _ownerMapping;
     private readonly IBridgeMetrics _metrics;
     private readonly ILogger<OwnerChangedConsumer> _logger;
@@ -48,6 +50,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
         ISyncLogRepository syncLog,
+        SyncLogWriter syncLogWriter,
         IOwnerMappingService ownerMapping,
         IBridgeMetrics metrics,
         IConfiguration configuration,
@@ -58,6 +61,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
+        _syncLogWriter = syncLogWriter;
         _ownerMapping = ownerMapping;
         _metrics = metrics;
         _topicName = configuration["ServiceBus:OwnerChangedTopic"] ?? "ff.company.owner-changed";
@@ -165,6 +169,9 @@ public sealed class OwnerChangedConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
+        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+            "BridgeReceived", "Inbound", "OwnerChange", "InProgress", ct: ct);
+
         // 1. Lookup mapping — firma musí být v bridge_id_mapping
         var mapping = await _mappingRepo.GetMappingAsync(message.FfCompanyId, ct);
         if (mapping is null)
@@ -214,6 +221,10 @@ public sealed class OwnerChangedConsumer : BackgroundService
             return;
         }
 
+        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+            "BridgeProcessed", "Inbound", "OwnerChange", "Success",
+            partnerClientId: mapping.PartnerClientId, partnerRegion: mapping.PartnerRegion, ct: CancellationToken.None);
+
         // 4. Publish bridge.company.synced → FieldForce
         try
         {
@@ -224,7 +235,8 @@ public sealed class OwnerChangedConsumer : BackgroundService
                 FfCompanyId = message.FfCompanyId,
                 PartnerClientId = mapping.PartnerClientId,
                 PartnerRegion = mapping.PartnerRegion,
-                Action = "OwnerChange"
+                Action = "OwnerChange",
+                OriginalMessageId = message.MessageId
             }, sbMessageId, CancellationToken.None);
         }
         catch (Exception ex)
@@ -258,6 +270,10 @@ public sealed class OwnerChangedConsumer : BackgroundService
         string errorCode,
         string errorMsg)
     {
+        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+            "BridgeFailed", "Inbound", "OwnerChange", "Failed",
+            errorCode: errorCode, errorMessage: errorMsg);
+
         var failed = new CompanySyncFailedMessage
         {
             MessageId = Guid.NewGuid().ToString(),
@@ -265,7 +281,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
             FfCompanyId = message.FfCompanyId,
             ErrorCode = errorCode,
             ErrorMessage = errorMsg,
-            OriginalMessageId = sbMessageId
+            OriginalMessageId = message.MessageId
         };
 
         try

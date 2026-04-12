@@ -12,4 +12,5 @@ public sealed class CompanySyncedResponse
     public required int PartnerClientId { get; init; }
     public required string PartnerRegion { get; init; }
     public required string Action { get; init; }
+    public string? OriginalMessageId { get; init; }
 }

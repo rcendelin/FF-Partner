@@ -14,6 +14,7 @@ public sealed class SyncLogEntry
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 }
 
+[Obsolete("Replaced by PartnerSyncLog in FieldForce DB")]
 public interface ISyncLogRepository
 {
     Task WriteAsync(SyncLogEntry entry, CancellationToken ct = default);

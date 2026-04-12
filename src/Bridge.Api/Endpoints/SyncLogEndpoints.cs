@@ -6,6 +6,7 @@ namespace Bridge.Api.Endpoints;
 /// REST endpoint pro diagnostiku sync logu.
 /// Vyžaduje API key (ApiKeyMiddleware).
 /// </summary>
+[Obsolete("Replaced by PartnerSyncLog in FieldForce DB")]
 public static class SyncLogEndpoints
 {
     private const int DefaultCount = 50;

@@ -13,4 +13,5 @@ public sealed class CompanyConflictMessage
     public required string PartnerRegion { get; init; }
     public required DateTimeOffset ExistingLastSyncAt { get; init; }
     public required DateTimeOffset IncomingMessageSentAt { get; init; }
+    public string? OriginalMessageId { get; init; }
 }

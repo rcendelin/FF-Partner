@@ -7,6 +7,7 @@ using Bridge.Domain.Enums;
 using Bridge.Domain.Exceptions;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
+using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner;
 using Bridge.Infrastructure.Partner.Repositories;
@@ -39,6 +40,7 @@ public sealed class CompanySyncConsumer : BackgroundService
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
     private readonly ISyncLogRepository _syncLog;
+    private readonly SyncLogWriter _syncLogWriter;
     private readonly IOwnerMappingService _ownerMapping;
     private readonly IBridgeMetrics _metrics;
     private readonly ILogger<CompanySyncConsumer> _logger;
@@ -51,6 +53,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
         ISyncLogRepository syncLog,
+        SyncLogWriter syncLogWriter,
         IOwnerMappingService ownerMapping,
         IBridgeMetrics metrics,
         IConfiguration configuration,
@@ -61,6 +64,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
+        _syncLogWriter = syncLogWriter;
         _ownerMapping = ownerMapping;
         _metrics = metrics;
         _topicName = configuration["ServiceBus:CompanySyncTopic"] ?? "ff.company.sync";
@@ -205,6 +209,9 @@ public sealed class CompanySyncConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
+        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+            "BridgeReceived", "Inbound", "Create", "InProgress", ct: ct);
+
         // Idempotence: duplicitní CREATE přeskočit (mapping již existuje)
         var existingMapping = await _mappingRepo.GetMappingAsync(message.CompanyId, ct);
         if (existingMapping is not null)
@@ -304,6 +311,10 @@ public sealed class CompanySyncConsumer : BackgroundService
         };
         await _mappingRepo.SaveMappingAsync(mapping, ct);
 
+        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+            "BridgeProcessed", "Inbound", "Create", "Success",
+            partnerClientId: partnerId, partnerRegion: region, ct: ct);
+
         // 7. Publikovat bridge.company.synced → FieldForce
         var response = new CompanySyncedResponse
         {
@@ -312,7 +323,8 @@ public sealed class CompanySyncConsumer : BackgroundService
             FfCompanyId = message.CompanyId,
             PartnerClientId = partnerId,
             PartnerRegion = region,
-            Action = "Create"
+            Action = "Create",
+            OriginalMessageId = message.MessageId
         };
         await _publisher.PublishAsync("bridge.company.synced", response, sbMessageId, ct);
 
@@ -339,6 +351,9 @@ public sealed class CompanySyncConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
+        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+            "BridgeReceived", "Inbound", "Update", "InProgress", ct: ct);
+
         // 1. Lookup mapping — firma musí být v bridge_id_mapping
         var mapping = await _mappingRepo.GetMappingAsync(message.CompanyId, ct);
         if (mapping is null)
@@ -391,7 +406,8 @@ public sealed class CompanySyncConsumer : BackgroundService
                     PartnerClientId = mapping.PartnerClientId,
                     PartnerRegion = region,
                     ExistingLastSyncAt = new DateTimeOffset(existingClient.LastFfSyncAt.Value, TimeSpan.Zero),
-                    IncomingMessageSentAt = message.SentAt
+                    IncomingMessageSentAt = message.SentAt,
+                    OriginalMessageId = message.MessageId
                 }, sbMessageId, ct);
             }
             catch (Exception ex)
@@ -571,6 +587,10 @@ public sealed class CompanySyncConsumer : BackgroundService
             // Pokračovat — zpráva bude completed, ne abandoned
         }
 
+        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+            "BridgeProcessed", "Inbound", "Update", "Success",
+            partnerClientId: mapping.PartnerClientId, partnerRegion: region, ct: ct);
+
         // 10. Publish bridge.company.synced
         await _publisher.PublishAsync("bridge.company.synced", new CompanySyncedResponse
         {
@@ -579,7 +599,8 @@ public sealed class CompanySyncConsumer : BackgroundService
             FfCompanyId = message.CompanyId,
             PartnerClientId = mapping.PartnerClientId,
             PartnerRegion = region,
-            Action = "Update"
+            Action = "Update",
+            OriginalMessageId = message.MessageId
         }, sbMessageId, ct);
 
         // 11. Log úspěchu
@@ -607,6 +628,13 @@ public sealed class CompanySyncConsumer : BackgroundService
         string operation,
         CancellationToken ct)
     {
+        if (message is not null)
+        {
+            await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+                "BridgeFailed", "Inbound", operation, "Failed",
+                errorCode: errorCode, errorMessage: errorMsg);
+        }
+
         var failed = new CompanySyncFailedMessage
         {
             MessageId = Guid.NewGuid().ToString(),
@@ -614,7 +642,7 @@ public sealed class CompanySyncConsumer : BackgroundService
             FfCompanyId = message?.CompanyId ?? Guid.Empty,
             ErrorCode = errorCode,
             ErrorMessage = errorMsg,
-            OriginalMessageId = sbMessageId
+            OriginalMessageId = message?.MessageId
         };
 
         try

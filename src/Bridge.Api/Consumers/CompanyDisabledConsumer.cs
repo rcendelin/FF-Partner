@@ -3,6 +3,7 @@ using Bridge.Api.Telemetry;
 using Bridge.Application.Interfaces;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
+using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner.Repositories;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,6 +36,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
     private readonly ISyncLogRepository _syncLog;
+    private readonly SyncLogWriter _syncLogWriter;
     private readonly IBridgeMetrics _metrics;
     private readonly ILogger<CompanyDisabledConsumer> _logger;
     private readonly string _topicName;
@@ -46,6 +48,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
         ISyncLogRepository syncLog,
+        SyncLogWriter syncLogWriter,
         IBridgeMetrics metrics,
         IConfiguration configuration,
         ILogger<CompanyDisabledConsumer> logger)
@@ -55,6 +58,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
+        _syncLogWriter = syncLogWriter;
         _metrics = metrics;
         _topicName = configuration["ServiceBus:CompanyDisabledTopic"] ?? "ff.company.disabled";
         _subscriptionName = configuration["ServiceBus:SubscriptionName"] ?? "bridge-main";
@@ -165,6 +169,9 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
+        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+            "BridgeReceived", "Inbound", "Disable", "InProgress", ct: ct);
+
         // 1. Lookup mapping — firma musí být v bridge_id_mapping
         var mapping = await _mappingRepo.GetMappingAsync(message.FfCompanyId, ct);
         if (mapping is null)
@@ -205,6 +212,10 @@ public sealed class CompanyDisabledConsumer : BackgroundService
             return;
         }
 
+        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+            "BridgeProcessed", "Inbound", "Disable", "Success",
+            partnerClientId: mapping.PartnerClientId, partnerRegion: mapping.PartnerRegion, ct: CancellationToken.None);
+
         // 3. Publish bridge.company.synced → FieldForce
         // CancellationToken.None — terminální operace musí proběhnout i při shutdown
         try
@@ -216,7 +227,8 @@ public sealed class CompanyDisabledConsumer : BackgroundService
                 FfCompanyId = message.FfCompanyId,
                 PartnerClientId = mapping.PartnerClientId,
                 PartnerRegion = mapping.PartnerRegion,
-                Action = "Disable"
+                Action = "Disable",
+                OriginalMessageId = message.MessageId
             }, sbMessageId, CancellationToken.None);
         }
         catch (Exception ex)
@@ -250,6 +262,10 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         string errorCode,
         string errorMsg)
     {
+        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+            "BridgeFailed", "Inbound", "Disable", "Failed",
+            errorCode: errorCode, errorMessage: errorMsg);
+
         var failed = new CompanySyncFailedMessage
         {
             MessageId = Guid.NewGuid().ToString(),
@@ -257,7 +273,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
             FfCompanyId = message.FfCompanyId,
             ErrorCode = errorCode,
             ErrorMessage = errorMsg,
-            OriginalMessageId = sbMessageId
+            OriginalMessageId = message.MessageId
         };
 
         try
