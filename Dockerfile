@@ -18,6 +18,11 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
+# global.json pinuje SDK verzi; Directory.Build.props definuje TargetFramework=net8.0,
+# Nullable a ImplicitUsings. Bez nich by dotnet restore selhal (NETSDK1013 — prázdný
+# TargetFramework v .csproj).
+COPY ["global.json", "./"]
+COPY ["Directory.Build.props", "./"]
 COPY ["src/Bridge.Api/Bridge.Api.csproj", "src/Bridge.Api/"]
 COPY ["src/Bridge.Application/Bridge.Application.csproj", "src/Bridge.Application/"]
 COPY ["src/Bridge.Domain/Bridge.Domain.csproj", "src/Bridge.Domain/"]
