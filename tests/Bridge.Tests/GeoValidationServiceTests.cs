@@ -14,7 +14,7 @@ public class GeoValidationServiceTests
     private readonly IGaiaZipRepository _zipRepo = Substitute.For<IGaiaZipRepository>();
     private readonly IGaiaStateRepository _stateRepo = Substitute.For<IGaiaStateRepository>();
     private readonly IGaiaCountyRepository _countyRepo = Substitute.For<IGaiaCountyRepository>();
-    private readonly ISyncLogRepository _syncLog = Substitute.For<ISyncLogRepository>();
+    private readonly IPartnerSyncLog _syncLog = Substitute.For<IPartnerSyncLog>();
 
     private GeoValidationService CreateService() => new(
         _countryRepo, _zipRepo, _stateRepo, _countyRepo, _syncLog,
@@ -62,9 +62,20 @@ public class GeoValidationServiceTests
 
         Assert.Null(result.ZipId);     // zip_id = null je OK
         Assert.Equal(2, result.CountryId);
-        // Sync log musí obsahovat geo_validation_warning
+        // Sync log musí obsahovat geo_validation/Warning
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e => e.Operation == "geo_validation_warning" && e.Severity == "Warning"));
+            Arg.Any<Guid>(),
+            Arg.Any<string>(),
+            "Validation",
+            Arg.Any<string>(),
+            "geo_validation",
+            "Warning",
+            Arg.Any<int?>(),
+            Arg.Any<string?>(),
+            Arg.Any<string?>(),
+            Arg.Any<string?>(),
+            Arg.Any<string?>(),
+            Arg.Any<CancellationToken>());
     }
 
     // ---- Neznámá ZEMĚ — tvrdá chyba ----
@@ -98,7 +109,11 @@ public class GeoValidationServiceTests
         await CreateService().ValidateAsync(address);
 
         // Prázdné PSČ — žádný warning
-        await _syncLog.DidNotReceive().WriteAsync(Arg.Any<SyncLogEntry>());
+        await _syncLog.DidNotReceive().WriteAsync(
+            Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<int?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
+            Arg.Any<CancellationToken>());
     }
 
     // ---- Kraj/okres null — sync pokračuje ----

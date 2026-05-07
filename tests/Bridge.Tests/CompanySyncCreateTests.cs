@@ -23,7 +23,7 @@ public class CompanySyncCreateTests
     private readonly IGaiaZipRepository _zipRepo = Substitute.For<IGaiaZipRepository>();
     private readonly IGaiaStateRepository _stateRepo = Substitute.For<IGaiaStateRepository>();
     private readonly IGaiaCountyRepository _countyRepo = Substitute.For<IGaiaCountyRepository>();
-    private readonly ISyncLogRepository _syncLog = Substitute.For<ISyncLogRepository>();
+    private readonly IPartnerSyncLog _syncLog = Substitute.For<IPartnerSyncLog>();
     private readonly IPartnerClientRepository _partnerRepo = Substitute.For<IPartnerClientRepository>();
     private readonly IBridgeMappingRepository _mappingRepo = Substitute.For<IBridgeMappingRepository>();
     private readonly IServiceBusPublisher _publisher = Substitute.For<IServiceBusPublisher>();
@@ -267,13 +267,19 @@ public class CompanySyncCreateTests
             Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
 
-        // Zapsán success sync log
+        // Zapsán BridgeProcessed/Success do PartnerSyncLog
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e =>
-                e.FfCompanyId == companyId &&
-                e.PartnerClientId == 55 &&
-                e.Operation == "create" &&
-                e.Status == "success"),
+            companyId,
+            Arg.Any<string>(),
+            "BridgeProcessed",
+            "Inbound",
+            "Create",
+            "Success",
+            55,
+            "cz",
+            Arg.Any<string?>(),
+            Arg.Any<string?>(),
+            Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -403,15 +409,15 @@ public class CompanySyncCreateTests
         };
         await _publisher.PublishAsync("bridge.company.synced", response, message.MessageId, ct);
 
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.CompanyId,
-            PartnerClientId = partnerId,
-            PartnerRegion = region,
-            Operation = "create",
-            ServiceBusMessageId = message.MessageId,
-            Status = "success",
-            Severity = "Info"
-        }, ct);
+        await _syncLog.WriteAsync(
+            message.CompanyId,
+            message.MessageId,
+            "BridgeProcessed",
+            "Inbound",
+            "Create",
+            "Success",
+            partnerId,
+            region,
+            ct: ct);
     }
 }

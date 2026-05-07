@@ -20,7 +20,7 @@ public class MoveClientToRegionSagaTests
 {
     private readonly IPartnerClientRepository _partnerRepo = Substitute.For<IPartnerClientRepository>();
     private readonly IBridgeMappingRepository _mappingRepo = Substitute.For<IBridgeMappingRepository>();
-    private readonly ISyncLogRepository _syncLog = Substitute.For<ISyncLogRepository>();
+    private readonly IPartnerSyncLog _syncLog = Substitute.For<IPartnerSyncLog>();
     private readonly IServiceBusPublisher _publisher = Substitute.For<IServiceBusPublisher>();
 
     private MoveClientToRegionSaga CreateSaga() => new(
@@ -103,12 +103,18 @@ public class MoveClientToRegionSagaTests
         // Act
         await saga.ExecuteAsync(client, "cz", "pl", mapping, "msg-1", CancellationToken.None);
 
-        // Musí být zapsán pending_region_change i region_change/success
+        // Musí být zapsán SagaPending/InProgress i SagaCompleted/Success do PartnerSyncLog
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e => e.Operation == "pending_region_change" && e.Status == "in_progress"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            "SagaPending", "Internal", "region_change", "InProgress",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             CancellationToken.None);
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e => e.Operation == "region_change" && e.Status == "success"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            "SagaCompleted", "Internal", "region_change", "Success",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             CancellationToken.None);
     }
 

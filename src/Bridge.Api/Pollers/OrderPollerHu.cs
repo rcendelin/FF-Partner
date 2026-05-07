@@ -22,7 +22,7 @@ public sealed class OrderPollerHu : OrderPollerBase
         IOrderSnapshotRepository snapshotRepo,
         IBridgeMappingRepository mappingRepo,
         IOrderPollingRepository orderPolling,
-        ISyncLogRepository syncLog,
+        IPartnerSyncLog syncLog,
         IBridgeMetrics metrics,
         IPartnerDbConnectionFactory partnerDbFactory,
         ILogger<OrderPollerHu> logger)

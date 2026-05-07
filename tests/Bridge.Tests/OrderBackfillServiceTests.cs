@@ -19,27 +19,31 @@ public class OrderBackfillServiceTests
 {
     // ── Stubs ──────────────────────────────────────────────────────────────────
 
-    private sealed class CapturingSyncLog : ISyncLogRepository
+    private sealed class CapturingSyncLog : IPartnerSyncLog
     {
         private readonly bool _alreadySucceeded;
-        public List<SyncLogEntry> Written { get; } = [];
+        public List<(string Phase, string Operation, string Status, string? PartnerRegion)> Written { get; } = [];
 
         public CapturingSyncLog(bool alreadySucceeded = false)
         {
             _alreadySucceeded = alreadySucceeded;
         }
 
-        public Task WriteAsync(SyncLogEntry entry, CancellationToken ct = default)
+        public Task WriteAsync(
+            Guid companyId, string correlationMessageId, string phase, string direction,
+            string operation, string status, int? partnerClientId = null, string? partnerRegion = null,
+            string? errorCode = null, string? errorMessage = null, string? payloadJson = null,
+            CancellationToken ct = default)
         {
-            Written.Add(entry);
+            Written.Add((phase, operation, status, partnerRegion));
             return Task.CompletedTask;
         }
 
-        public Task<IReadOnlyList<SyncLogEntry>> GetLastAsync(int count, CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+        public Task<IReadOnlyList<PartnerSyncLogEntry>> GetLastAsync(int count, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PartnerSyncLogEntry>>(Array.Empty<PartnerSyncLogEntry>());
 
-        public Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+        public Task<IReadOnlyList<PartnerSyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PartnerSyncLogEntry>>(Array.Empty<PartnerSyncLogEntry>());
 
         public Task<bool> HasOperationSucceededAsync(string operation, string region, CancellationToken ct = default)
             => Task.FromResult(_alreadySucceeded);

@@ -19,7 +19,7 @@ public class OwnerChangedConsumerTests
 {
     private readonly IBridgeMappingRepository _mappingRepo = Substitute.For<IBridgeMappingRepository>();
     private readonly IPartnerClientRepository _partnerRepo = Substitute.For<IPartnerClientRepository>();
-    private readonly ISyncLogRepository _syncLog = Substitute.For<ISyncLogRepository>();
+    private readonly IPartnerSyncLog _syncLog = Substitute.For<IPartnerSyncLog>();
     private readonly IServiceBusPublisher _publisher = Substitute.For<IServiceBusPublisher>();
     private readonly IOwnerMappingService _ownerMapping = Substitute.For<IOwnerMappingService>();
 
@@ -93,12 +93,10 @@ public class OwnerChangedConsumerTests
         await ExecuteOwnerChangeAsync(msg);
 
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e =>
-                e.FfCompanyId == msg.FfCompanyId &&
-                e.PartnerClientId == 42 &&
-                e.PartnerRegion == "hu" &&
-                e.Operation == "owner_change" &&
-                e.Status == "success"),
+            msg.FfCompanyId, Arg.Any<string>(),
+            "BridgeProcessed", "Inbound", "OwnerChange", "Success",
+            42, "hu",
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -159,9 +157,10 @@ public class OwnerChangedConsumerTests
         await ExecuteOwnerChangeAsync(msg);
 
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e =>
-                e.Operation == "owner_change" &&
-                e.Status == "failed"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            "BridgeFailed", "Inbound", "OwnerChange", "Failed",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -187,7 +186,10 @@ public class OwnerChangedConsumerTests
             Arg.Any<CancellationToken>());
 
         await _syncLog.DidNotReceive().WriteAsync(
-            Arg.Is<SyncLogEntry>(e => e.Status == "success"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "Success",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -227,7 +229,10 @@ public class OwnerChangedConsumerTests
         await ExecuteOwnerChangeAsync(msg);
 
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e => e.Status == "success"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "Success",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -254,15 +259,12 @@ public class OwnerChangedConsumerTests
             };
             try { await _publisher.PublishAsync("bridge.company.sync-failed", failed, sbMessageId, CancellationToken.None); }
             catch { /* ignorovat */ }
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.FfCompanyId,
-                Operation = "owner_change",
-                ServiceBusMessageId = sbMessageId,
-                Status = "failed",
-                ErrorMessage = $"NO_MAPPING: Mapping pro CompanyId={message.FfCompanyId} neexistuje.",
-                Severity = "Error"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                message.FfCompanyId, sbMessageId,
+                "BridgeFailed", "Inbound", "OwnerChange", "Failed",
+                errorCode: "NO_MAPPING",
+                errorMessage: $"NO_MAPPING: Mapping pro CompanyId={message.FfCompanyId} neexistuje.",
+                ct: CancellationToken.None);
             return;
         }
 
@@ -281,15 +283,12 @@ public class OwnerChangedConsumerTests
             };
             try { await _publisher.PublishAsync("bridge.company.sync-failed", failed, sbMessageId, CancellationToken.None); }
             catch { /* ignorovat */ }
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.FfCompanyId,
-                Operation = "owner_change",
-                ServiceBusMessageId = sbMessageId,
-                Status = "failed",
-                ErrorMessage = $"OWNER_NOT_MAPPED: User.Id={message.NewOwnerUserId}.",
-                Severity = "Error"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                message.FfCompanyId, sbMessageId,
+                "BridgeFailed", "Inbound", "OwnerChange", "Failed",
+                errorCode: "OWNER_NOT_MAPPED",
+                errorMessage: $"OWNER_NOT_MAPPED: User.Id={message.NewOwnerUserId}.",
+                ct: CancellationToken.None);
             return;
         }
 
@@ -312,15 +311,13 @@ public class OwnerChangedConsumerTests
             };
             try { await _publisher.PublishAsync("bridge.company.sync-failed", failed, sbMessageId, CancellationToken.None); }
             catch { /* ignorovat */ }
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.FfCompanyId,
-                Operation = "owner_change",
-                ServiceBusMessageId = sbMessageId,
-                Status = "failed",
-                ErrorMessage = $"CLIENT_NOT_FOUND: Klient id={mapping.PartnerClientId} nenalezen.",
-                Severity = "Error"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                message.FfCompanyId, sbMessageId,
+                "BridgeFailed", "Inbound", "OwnerChange", "Failed",
+                mapping.PartnerClientId, mapping.PartnerRegion,
+                errorCode: "CLIENT_NOT_FOUND",
+                errorMessage: $"CLIENT_NOT_FOUND: Klient id={mapping.PartnerClientId} nenalezen.",
+                ct: CancellationToken.None);
             return;
         }
 
@@ -340,15 +337,10 @@ public class OwnerChangedConsumerTests
         catch { /* data konzistentní i při publish chybě */ }
 
         // 5. Log úspěchu
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            PartnerClientId = mapping.PartnerClientId,
-            PartnerRegion = mapping.PartnerRegion,
-            Operation = "owner_change",
-            ServiceBusMessageId = sbMessageId,
-            Status = "success",
-            Severity = "Info"
-        }, CancellationToken.None);
+        await _syncLog.WriteAsync(
+            message.FfCompanyId, sbMessageId,
+            "BridgeProcessed", "Inbound", "OwnerChange", "Success",
+            mapping.PartnerClientId, mapping.PartnerRegion,
+            ct: CancellationToken.None);
     }
 }

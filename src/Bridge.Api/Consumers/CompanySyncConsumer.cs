@@ -7,7 +7,6 @@ using Bridge.Domain.Enums;
 using Bridge.Domain.Exceptions;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
-using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner;
 using Bridge.Infrastructure.Partner.Repositories;
@@ -39,8 +38,7 @@ public sealed class CompanySyncConsumer : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
-    private readonly ISyncLogRepository _syncLog;
-    private readonly SyncLogWriter _syncLogWriter;
+    private readonly IPartnerSyncLog _syncLog;
     private readonly IOwnerMappingService _ownerMapping;
     private readonly IBridgeMetrics _metrics;
     private readonly ILogger<CompanySyncConsumer> _logger;
@@ -52,8 +50,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         IServiceScopeFactory scopeFactory,
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
-        ISyncLogRepository syncLog,
-        SyncLogWriter syncLogWriter,
+        IPartnerSyncLog syncLog,
         IOwnerMappingService ownerMapping,
         IBridgeMetrics metrics,
         IConfiguration configuration,
@@ -64,7 +61,6 @@ public sealed class CompanySyncConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
-        _syncLogWriter = syncLogWriter;
         _ownerMapping = ownerMapping;
         _metrics = metrics;
         _topicName = configuration["ServiceBus:CompanySyncTopic"] ?? "ff.company.sync";
@@ -209,7 +205,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
-        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.CompanyId, message.MessageId,
             "BridgeReceived", "Inbound", "Create", "InProgress", ct: ct);
 
         // Idempotence: duplicitní CREATE přeskočit (mapping již existuje)
@@ -311,7 +307,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         };
         await _mappingRepo.SaveMappingAsync(mapping, ct);
 
-        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.CompanyId, message.MessageId,
             "BridgeProcessed", "Inbound", "Create", "Success",
             partnerClientId: partnerId, partnerRegion: region, ct: ct);
 
@@ -328,17 +324,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         };
         await _publisher.PublishAsync("bridge.company.synced", response, sbMessageId, ct);
 
-        // 8. Log úspěchu
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.CompanyId,
-            PartnerClientId = partnerId,
-            PartnerRegion = region,
-            Operation = "create",
-            ServiceBusMessageId = sbMessageId,
-            Status = "success",
-            Severity = "Info"
-        }, ct);
+        // BridgeProcessed/Success na řádku ~314 už pokrývá audit — duplicate write smazán.
 
         _logger.LogInformation(
             "CREATE: FF CompanyId={CompanyId} → Partner ClientId={PartnerId}, region={Region}",
@@ -351,7 +337,7 @@ public sealed class CompanySyncConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
-        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.CompanyId, message.MessageId,
             "BridgeReceived", "Inbound", "Update", "InProgress", ct: ct);
 
         // 1. Lookup mapping — firma musí být v bridge_id_mapping
@@ -418,17 +404,18 @@ public sealed class CompanySyncConsumer : BackgroundService
             }
 
             // CancellationToken.None — log musí být zapsán i při shutdown
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.CompanyId,
-                PartnerClientId = mapping.PartnerClientId,
-                PartnerRegion = region,
-                Operation = "update",
-                ServiceBusMessageId = sbMessageId,
-                Status = "conflict",
-                ErrorMessage = "Stale message — novější sync detekován, zápis přeskočen.",
-                Severity = "Warning"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                companyId: message.CompanyId,
+                correlationMessageId: message.MessageId,
+                phase: "BridgeProcessed",
+                direction: "Inbound",
+                operation: "Update",
+                status: "Conflict",
+                partnerClientId: mapping.PartnerClientId,
+                partnerRegion: region,
+                errorCode: "STALE_MESSAGE",
+                errorMessage: "Stale message — novější sync detekován, zápis přeskočen.",
+                ct: CancellationToken.None);
 
             return;
         }
@@ -573,21 +560,22 @@ public sealed class CompanySyncConsumer : BackgroundService
                 "Bude opraven při příštím sync.",
                 message.CompanyId, mapping.PartnerClientId);
 
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.CompanyId,
-                PartnerClientId = mapping.PartnerClientId,
-                PartnerRegion = region,
-                Operation = "update",
-                ServiceBusMessageId = sbMessageId,
-                Status = "warning",
-                ErrorMessage = $"UpdateMappingAsync selhal: {ex.Message}. tbl_client aktualizován, mapping stale.",
-                Severity = "Warning"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                companyId: message.CompanyId,
+                correlationMessageId: message.MessageId,
+                phase: "BridgeProcessed",
+                direction: "Inbound",
+                operation: "Update",
+                status: "Warning",
+                partnerClientId: mapping.PartnerClientId,
+                partnerRegion: region,
+                errorCode: "MAPPING_STALE",
+                errorMessage: $"UpdateMappingAsync selhal: {ex.Message}. tbl_client aktualizován, mapping stale.",
+                ct: CancellationToken.None);
             // Pokračovat — zpráva bude completed, ne abandoned
         }
 
-        await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.CompanyId, message.MessageId,
             "BridgeProcessed", "Inbound", "Update", "Success",
             partnerClientId: mapping.PartnerClientId, partnerRegion: region, ct: ct);
 
@@ -603,17 +591,7 @@ public sealed class CompanySyncConsumer : BackgroundService
             OriginalMessageId = message.MessageId
         }, sbMessageId, ct);
 
-        // 11. Log úspěchu
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.CompanyId,
-            PartnerClientId = mapping.PartnerClientId,
-            PartnerRegion = region,
-            Operation = "update",
-            ServiceBusMessageId = sbMessageId,
-            Status = "success",
-            Severity = "Info"
-        }, ct);
+        // BridgeProcessed/Success na řádku ~590 už pokrývá audit — duplicate write smazán.
 
         _logger.LogInformation(
             "UPDATE: FF CompanyId={CompanyId} → Partner ClientId={PartnerId}, region={Region}",
@@ -630,9 +608,12 @@ public sealed class CompanySyncConsumer : BackgroundService
     {
         if (message is not null)
         {
-            await _syncLogWriter.WriteAsync(message.CompanyId, message.MessageId,
+            // CancellationToken.None — terminální audit musí proběhnout i při shutdown
+            // (konzistentní s publish na řádku ~635)
+            await _syncLog.WriteAsync(message.CompanyId, message.MessageId,
                 "BridgeFailed", "Inbound", operation, "Failed",
-                errorCode: errorCode, errorMessage: errorMsg);
+                errorCode: errorCode, errorMessage: errorMsg,
+                ct: CancellationToken.None);
         }
 
         var failed = new CompanySyncFailedMessage
@@ -657,16 +638,7 @@ public sealed class CompanySyncConsumer : BackgroundService
                 message?.CompanyId);
         }
 
-        // CancellationToken.None — sync log musí být zapsán i při shutdown (terminální operace)
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message?.CompanyId,
-            Operation = operation,
-            ServiceBusMessageId = sbMessageId,
-            Status = "failed",
-            ErrorMessage = $"{errorCode}: {errorMsg}",
-            Severity = "Error"
-        }, CancellationToken.None);
+        // BridgeFailed/Failed záznam výše pokrývá audit — duplicate write smazán.
     }
 
     private Task HandleErrorAsync(ProcessErrorEventArgs args)

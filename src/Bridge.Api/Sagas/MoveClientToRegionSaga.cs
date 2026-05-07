@@ -13,25 +13,33 @@ namespace Bridge.Api.Sagas;
 ///
 /// Kritická sekvence (dle CLAUDE.md sekce 9):
 ///   Krok 1: INSERT do cílové DB → chyba → STOP (HasNoSideEffects)
-///   Krok 2: Log 'pending_region_change'
+///   Krok 2: Log Phase='SagaPending', Status='InProgress' (pending_region_change marker)
 ///   Krok 3: DISABLE v původní DB → chyba → DELETE z cílové → CompensatedAtStep3
 ///   Krok 4: UpdateMappingAsync → chyba → EnableAsync původní + DELETE z cílové → CompensatedAtStep4
 ///   Krok 5: Publish bridge.company.synced
 ///
 /// Při startu Bridge: <see cref="SagaRecoveryService"/> detekuje nedokončené ságy a doběhne je.
+///
+/// PartnerSyncLog konvence:
+///   Operation='region_change' (jednotně pro pending i terminální markery)
+///   Phase='SagaPending' / 'SagaCompleted' / 'SagaFailed'
+///   Status='InProgress' / 'Success' / 'Compensated' / 'CompensationFailed' / 'Failed'
 /// </summary>
 public sealed class MoveClientToRegionSaga
 {
+    private const string Operation = "region_change";
+    private const string Direction = "Internal";
+
     private readonly IPartnerClientRepository _partnerRepo;
     private readonly IBridgeMappingRepository _mappingRepo;
-    private readonly ISyncLogRepository _syncLog;
+    private readonly IPartnerSyncLog _syncLog;
     private readonly IServiceBusPublisher _publisher;
     private readonly ILogger<MoveClientToRegionSaga> _logger;
 
     public MoveClientToRegionSaga(
         IPartnerClientRepository partnerRepo,
         IBridgeMappingRepository mappingRepo,
-        ISyncLogRepository syncLog,
+        IPartnerSyncLog syncLog,
         IServiceBusPublisher publisher,
         ILogger<MoveClientToRegionSaga> logger)
     {
@@ -56,10 +64,11 @@ public sealed class MoveClientToRegionSaga
         CancellationToken ct)
     {
         var now = DateTime.UtcNow;
+        var companyId = updatedClient.FfCompanyId!.Value;
 
         _logger.LogInformation(
             "Saga START: CompanyId={CompanyId} přesun {Source}→{Target} (sourcePartnerId={SourceId})",
-            updatedClient.FfCompanyId, sourceRegion, targetRegion, existingMapping.PartnerClientId);
+            companyId, sourceRegion, targetRegion, existingMapping.PartnerClientId);
 
         // ── Krok 1: INSERT do cílové DB ──────────────────────────────────────────────
         // Idempotence guard: zkontrolovat zda záznam již existuje v cílové DB (partial failure / restart).
@@ -69,15 +78,14 @@ public sealed class MoveClientToRegionSaga
         {
             // Kontrola: pokud záznam s ff_company_id již v cílové DB existuje, použít ho (idempotence).
             // Zabraňuje double-INSERT při race condition (SagaRecovery + Consumer zpracovávají zároveň).
-            var existingInTarget = await _partnerRepo.GetByFfCompanyIdAsync(
-                updatedClient.FfCompanyId!.Value, targetRegion, ct);
+            var existingInTarget = await _partnerRepo.GetByFfCompanyIdAsync(companyId, targetRegion, ct);
 
             if (existingInTarget is not null)
             {
                 _logger.LogWarning(
                     "Saga Krok 1: záznam ff_company_id={CompanyId} již existuje v cílové DB {Target} (id={Id}) — " +
                     "přeskakuji INSERT (idempotence / partial failure recovery).",
-                    updatedClient.FfCompanyId, targetRegion, existingInTarget.IdClient);
+                    companyId, targetRegion, existingInTarget.IdClient);
                 targetPartnerId = existingInTarget.IdClient;
             }
             else
@@ -91,11 +99,13 @@ public sealed class MoveClientToRegionSaga
         {
             _logger.LogError(ex,
                 "Saga Krok 1 SELHAL (INSERT do {Target}) — CompanyId={CompanyId}, žádné změny",
-                targetRegion, updatedClient.FfCompanyId);
+                targetRegion, companyId);
 
-            await WriteSyncLogAsync(updatedClient.FfCompanyId, existingMapping.PartnerClientId,
-                sourceRegion, "region_change_failed", sbMessageId, "failed",
-                $"Krok 1 (INSERT do {targetRegion}) selhal: {ex.Message}");
+            await _syncLog.WriteAsync(
+                companyId, sbMessageId, "SagaFailed", Direction, Operation, "Failed",
+                partnerClientId: existingMapping.PartnerClientId, partnerRegion: sourceRegion,
+                errorMessage: $"Krok 1 (INSERT do {targetRegion}) selhal: {ex.Message}",
+                ct: CancellationToken.None);
 
             return new SagaResult
             {
@@ -108,21 +118,22 @@ public sealed class MoveClientToRegionSaga
             "Saga Krok 1 OK: targetPartnerId={TargetId} v regionu {Target}",
             targetPartnerId, targetRegion);
 
-        // ── Krok 2: Zapsat pending_region_change ──────────────────────────────────────
+        // ── Krok 2: Zapsat pending_region_change marker ───────────────────────────────
         var payload = JsonSerializer.Serialize(new
         {
             sourceRegion,
             targetRegion,
             sourcePartnerId = existingMapping.PartnerClientId,
             targetPartnerId
-            // sbMessageId není potřeba — service_bus_message_id DB sloupec ho uchovává
         });
 
         // CancellationToken.None — tento log MUSÍ být zapsán jako transakční marker
-        await WriteSyncLogAsync(updatedClient.FfCompanyId, existingMapping.PartnerClientId,
-            sourceRegion, "pending_region_change", sbMessageId, "in_progress",
-            $"INSERT do {targetRegion} hotov (targetId={targetPartnerId}), čeká na DISABLE v {sourceRegion}.",
-            payload, CancellationToken.None);
+        // (pokud nedojde do PartnerSyncLog, recovery při restartu nepozná, že je sága nedokončená)
+        await _syncLog.WriteAsync(
+            companyId, sbMessageId, "SagaPending", Direction, Operation, "InProgress",
+            partnerClientId: existingMapping.PartnerClientId, partnerRegion: sourceRegion,
+            errorMessage: $"INSERT do {targetRegion} hotov (targetId={targetPartnerId}), čeká na DISABLE v {sourceRegion}.",
+            payloadJson: payload, ct: CancellationToken.None);
 
         // ── Krok 3: DISABLE v původní DB ─────────────────────────────────────────────
         // Při chybě: DELETE z cílové DB (kompenzace)
@@ -138,7 +149,7 @@ public sealed class MoveClientToRegionSaga
 
             await CompensateDeleteFromTargetAsync(
                 targetPartnerId, targetRegion,
-                updatedClient.FfCompanyId, existingMapping.PartnerClientId, sourceRegion, sbMessageId,
+                companyId, existingMapping.PartnerClientId, sourceRegion, sbMessageId,
                 $"Krok 3 selhal: {ex.Message}");
 
             return new SagaResult
@@ -181,7 +192,7 @@ public sealed class MoveClientToRegionSaga
             await CompensateEnableSourceDeleteTargetAsync(
                 existingMapping.PartnerClientId, sourceRegion,
                 targetPartnerId, targetRegion,
-                updatedClient.FfCompanyId, existingMapping.PartnerClientId, sbMessageId,
+                companyId, existingMapping.PartnerClientId, sbMessageId,
                 $"Krok 4 selhal: {ex.Message}");
 
             return new SagaResult
@@ -214,18 +225,19 @@ public sealed class MoveClientToRegionSaga
             // Logujeme Warning (ne Error) — příští sync opraví stav.
             _logger.LogWarning(ex,
                 "Saga Krok 5: publish bridge.company.synced selhal pro CompanyId={CompanyId}. Data jsou konzistentní.",
-                updatedClient.FfCompanyId);
+                companyId);
         }
 
         // ── Úspěch ───────────────────────────────────────────────────────────────────
-        await WriteSyncLogAsync(updatedClient.FfCompanyId, targetPartnerId,
-            targetRegion, "region_change", sbMessageId, "success",
-            $"Přesun z {sourceRegion}/{existingMapping.PartnerClientId} do {targetRegion}/{targetPartnerId} dokončen.",
-            cancellationToken: CancellationToken.None);
+        await _syncLog.WriteAsync(
+            companyId, sbMessageId, "SagaCompleted", Direction, Operation, "Success",
+            partnerClientId: targetPartnerId, partnerRegion: targetRegion,
+            errorMessage: $"Přesun z {sourceRegion}/{existingMapping.PartnerClientId} do {targetRegion}/{targetPartnerId} dokončen.",
+            ct: CancellationToken.None);
 
         _logger.LogInformation(
             "Saga ÚSPĚCH: CompanyId={CompanyId} přesunuto {Source}→{Target} (sourceId={SourceId}, targetId={TargetId})",
-            updatedClient.FfCompanyId, sourceRegion, targetRegion,
+            companyId, sourceRegion, targetRegion,
             existingMapping.PartnerClientId, targetPartnerId);
 
         return new SagaResult { Outcome = SagaOutcome.Success };
@@ -238,13 +250,13 @@ public sealed class MoveClientToRegionSaga
     /// Detekuje aktuální stav z DB a mappingu a rozhodne o dalším postupu.
     /// </summary>
     public async Task RecoverAsync(
-        SyncLogEntry pendingSaga,
+        PartnerSyncLogEntry pendingSaga,
         CancellationToken ct)
     {
-        if (pendingSaga.FfCompanyId is null || string.IsNullOrEmpty(pendingSaga.PayloadJson))
+        if (string.IsNullOrEmpty(pendingSaga.PayloadJson))
         {
             _logger.LogWarning(
-                "Recovery: prázdný payload v pending_region_change záznamu (id created_at={CreatedAt}) — přeskakuji",
+                "Recovery: prázdný payload v SagaPending záznamu (created_at={CreatedAt}) — přeskakuji",
                 pendingSaga.CreatedAt);
             return;
         }
@@ -260,18 +272,21 @@ public sealed class MoveClientToRegionSaga
         {
             _logger.LogError(ex,
                 "Recovery: nepodařilo se deserializovat payload pro CompanyId={CompanyId}",
-                pendingSaga.FfCompanyId);
+                pendingSaga.CompanyId);
             return;
         }
+
+        var companyId = pendingSaga.CompanyId;
+        var correlationId = pendingSaga.CorrelationMessageId;
 
         _logger.LogInformation(
             "Recovery: zpracovávám nedokončenou ságu CompanyId={CompanyId} {Source}→{Target} " +
             "(sourceId={SourceId}, targetId={TargetId})",
-            pendingSaga.FfCompanyId, payload.SourceRegion, payload.TargetRegion,
+            companyId, payload.SourceRegion, payload.TargetRegion,
             payload.SourcePartnerId, payload.TargetPartnerId);
 
         // Zjistit aktuální stav
-        var mapping = await _mappingRepo.GetMappingAsync(pendingSaga.FfCompanyId.Value, ct);
+        var mapping = await _mappingRepo.GetMappingAsync(companyId, ct);
         var targetExists = await _partnerRepo.GetByPartnerIdAsync(payload.TargetPartnerId, payload.TargetRegion, ct);
         var sourceClient = await _partnerRepo.GetByPartnerIdAsync(payload.SourcePartnerId, payload.SourceRegion, ct);
 
@@ -279,12 +294,14 @@ public sealed class MoveClientToRegionSaga
         if (mapping?.PartnerRegion == payload.TargetRegion && mapping?.PartnerClientId == payload.TargetPartnerId)
         {
             _logger.LogInformation(
-                "Recovery A: mapping již ukazuje na {Target}/{TargetId} — saga dokončena, zapisuji region_change/success",
+                "Recovery A: mapping již ukazuje na {Target}/{TargetId} — saga dokončena, zapisuji SagaCompleted/Success",
                 payload.TargetRegion, payload.TargetPartnerId);
 
-            await WriteSyncLogAsync(pendingSaga.FfCompanyId, payload.TargetPartnerId,
-                payload.TargetRegion, "region_change", pendingSaga.ServiceBusMessageId, "success",
-                "Recovery: detekováno jako již dokončeno.", cancellationToken: CancellationToken.None);
+            await _syncLog.WriteAsync(
+                companyId, correlationId, "SagaCompleted", Direction, Operation, "Success",
+                partnerClientId: payload.TargetPartnerId, partnerRegion: payload.TargetRegion,
+                errorMessage: "Recovery: detekováno jako již dokončeno.",
+                ct: CancellationToken.None);
             return;
         }
 
@@ -300,13 +317,13 @@ public sealed class MoveClientToRegionSaga
                 // Zachovat PipedriveId, FfUserId, PartnerOwnerId z existujícího mappingu (dle CLAUDE.md — nemodifikovat historické hodnoty)
                 var updatedMapping = new IdMappingRecord
                 {
-                    FfCompanyId = pendingSaga.FfCompanyId.Value,
+                    FfCompanyId = companyId,
                     PartnerClientId = payload.TargetPartnerId,
                     PartnerRegion = payload.TargetRegion,
                     EntityType = mapping?.EntityType ?? "client",
-                    PipedriveId = mapping?.PipedriveId,          // zachovat historické Pipedrive ID
-                    FfUserId = mapping?.FfUserId,                // zachovat FF user
-                    PartnerOwnerId = mapping?.PartnerOwnerId,    // zachovat owner
+                    PipedriveId = mapping?.PipedriveId,
+                    FfUserId = mapping?.FfUserId,
+                    PartnerOwnerId = mapping?.PartnerOwnerId,
                     LastSyncAt = DateTime.UtcNow,
                     LastSyncDirection = "ff_to_partner",
                     CreatedAt = mapping?.CreatedAt ?? DateTime.UtcNow,
@@ -314,17 +331,19 @@ public sealed class MoveClientToRegionSaga
                 };
                 await _mappingRepo.UpdateMappingAsync(updatedMapping, ct);
 
-                await WriteSyncLogAsync(pendingSaga.FfCompanyId, payload.TargetPartnerId,
-                    payload.TargetRegion, "region_change", pendingSaga.ServiceBusMessageId, "success",
-                    "Recovery B: mapping opraven.", cancellationToken: CancellationToken.None);
+                await _syncLog.WriteAsync(
+                    companyId, correlationId, "SagaCompleted", Direction, Operation, "Success",
+                    partnerClientId: payload.TargetPartnerId, partnerRegion: payload.TargetRegion,
+                    errorMessage: "Recovery B: mapping opraven.",
+                    ct: CancellationToken.None);
 
-                _logger.LogInformation("Recovery B ÚSPĚCH: mapping opraven pro CompanyId={CompanyId}", pendingSaga.FfCompanyId);
+                _logger.LogInformation("Recovery B ÚSPĚCH: mapping opraven pro CompanyId={CompanyId}", companyId);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex,
                     "Recovery B SELHAL: UpdateMapping pro CompanyId={CompanyId}",
-                    pendingSaga.FfCompanyId);
+                    companyId);
             }
             return;
         }
@@ -338,19 +357,21 @@ public sealed class MoveClientToRegionSaga
 
             await CompensateDeleteFromTargetAsync(
                 payload.TargetPartnerId, payload.TargetRegion,
-                pendingSaga.FfCompanyId, payload.SourcePartnerId, payload.SourceRegion,
-                pendingSaga.ServiceBusMessageId, "Recovery C: source stále aktivní, DELETE target.");
+                companyId, payload.SourcePartnerId, payload.SourceRegion,
+                correlationId, "Recovery C: source stále aktivní, DELETE target.");
             return;
         }
 
         // Případ D: Target neexistuje → INSERT selhal nebo byl zkompenzován → zapisuji jako vyřešeno
         _logger.LogInformation(
-            "Recovery D: target={TargetId} v {Target} neexistuje → INSERT selhal nebo zkompenzován. Zapisuji region_change/compensated",
+            "Recovery D: target={TargetId} v {Target} neexistuje → INSERT selhal nebo zkompenzován. Zapisuji SagaCompleted/Compensated",
             payload.TargetPartnerId, payload.TargetRegion);
 
-        await WriteSyncLogAsync(pendingSaga.FfCompanyId, payload.SourcePartnerId,
-            payload.SourceRegion, "region_change", pendingSaga.ServiceBusMessageId, "compensated",
-            "Recovery D: target neexistuje — saga považována za zkompenzovanou.", cancellationToken: CancellationToken.None);
+        await _syncLog.WriteAsync(
+            companyId, correlationId, "SagaCompleted", Direction, Operation, "Compensated",
+            partnerClientId: payload.SourcePartnerId, partnerRegion: payload.SourceRegion,
+            errorMessage: "Recovery D: target neexistuje — saga považována za zkompenzovanou.",
+            ct: CancellationToken.None);
     }
 
     // ── Privátní helpers ─────────────────────────────────────────────────────────────
@@ -385,8 +406,8 @@ public sealed class MoveClientToRegionSaga
 
     private async Task CompensateDeleteFromTargetAsync(
         int targetPartnerId, string targetRegion,
-        Guid? ffCompanyId, int sourcePartnerId, string sourceRegion,
-        string? sbMessageId, string reason)
+        Guid ffCompanyId, int sourcePartnerId, string sourceRegion,
+        string sbMessageId, string reason)
     {
         try
         {
@@ -396,10 +417,11 @@ public sealed class MoveClientToRegionSaga
                 "Kompenzace OK: DELETE targetPartnerId={TargetId} z {Target}. Klient {SourceId} v {Source} zůstal aktivní.",
                 targetPartnerId, targetRegion, sourcePartnerId, sourceRegion);
 
-            await WriteSyncLogAsync(ffCompanyId, sourcePartnerId, sourceRegion,
-                "region_change", sbMessageId, "compensated",
-                $"CompensatedAtStep3: DELETE z {targetRegion}/{targetPartnerId}. Důvod: {reason}",
-                cancellationToken: CancellationToken.None);
+            await _syncLog.WriteAsync(
+                ffCompanyId, sbMessageId, "SagaCompleted", Direction, Operation, "Compensated",
+                partnerClientId: sourcePartnerId, partnerRegion: sourceRegion,
+                errorMessage: $"CompensatedAtStep3: DELETE z {targetRegion}/{targetPartnerId}. Důvod: {reason}",
+                ct: CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -408,17 +430,18 @@ public sealed class MoveClientToRegionSaga
                 "Klient existuje v OBOU regionech! Nutný manuální zásah.",
                 targetPartnerId, targetRegion);
 
-            await WriteSyncLogAsync(ffCompanyId, targetPartnerId, targetRegion,
-                "region_change", sbMessageId, "compensation_failed",
-                $"CRITICAL: DELETE z {targetRegion}/{targetPartnerId} selhal: {ex.Message}. Duplikát v DB!",
-                cancellationToken: CancellationToken.None);
+            await _syncLog.WriteAsync(
+                ffCompanyId, sbMessageId, "SagaFailed", Direction, Operation, "CompensationFailed",
+                partnerClientId: targetPartnerId, partnerRegion: targetRegion,
+                errorMessage: $"CRITICAL: DELETE z {targetRegion}/{targetPartnerId} selhal: {ex.Message}. Duplikát v DB!",
+                ct: CancellationToken.None);
         }
     }
 
     private async Task CompensateEnableSourceDeleteTargetAsync(
         int sourcePartnerId, string sourceRegion,
         int targetPartnerId, string targetRegion,
-        Guid? ffCompanyId, int logPartnerId, string? sbMessageId,
+        Guid ffCompanyId, int logPartnerId, string sbMessageId,
         string reason)
     {
         var enableOk = false;
@@ -461,33 +484,18 @@ public sealed class MoveClientToRegionSaga
             }
         }
 
-        var status = (enableOk && deleteOk) ? "compensated" : "compensation_failed";
-        var msg = enableOk && deleteOk
+        var allOk = enableOk && deleteOk;
+        var phase = allOk ? "SagaCompleted" : "SagaFailed";
+        var status = allOk ? "Compensated" : "CompensationFailed";
+        var msg = allOk
             ? $"CompensatedAtStep4: Enable {sourceRegion}/{sourcePartnerId}, Delete {targetRegion}/{targetPartnerId}. Důvod: {reason}"
             : $"CRITICAL: Kompenzace Kroku 4 selhala (enable={enableOk}, delete={deleteOk}). Nutný manuální zásah! Důvod: {reason}";
 
-        await WriteSyncLogAsync(ffCompanyId, logPartnerId, sourceRegion,
-            "region_change", sbMessageId, status, msg, cancellationToken: CancellationToken.None);
+        await _syncLog.WriteAsync(
+            ffCompanyId, sbMessageId, phase, Direction, Operation, status,
+            partnerClientId: logPartnerId, partnerRegion: sourceRegion,
+            errorMessage: msg, ct: CancellationToken.None);
     }
-
-    private Task WriteSyncLogAsync(
-        Guid? ffCompanyId, int? partnerId, string? region,
-        string operation, string? sbMessageId, string status, string? errorMessage,
-        string? payloadJson = null, CancellationToken cancellationToken = default)
-        => _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = ffCompanyId,
-            PartnerClientId = partnerId,
-            PartnerRegion = region,
-            Operation = operation,
-            ServiceBusMessageId = sbMessageId,
-            Status = status,
-            ErrorMessage = errorMessage,
-            PayloadJson = payloadJson,
-            Severity = status is "failed" or "compensation_failed" ? "Error"
-                     : status == "warning" ? "Warning"
-                     : "Info"
-        }, cancellationToken);
 
     // DTO pro deserializaci payload_json v recovery
     private sealed class SagaPayload

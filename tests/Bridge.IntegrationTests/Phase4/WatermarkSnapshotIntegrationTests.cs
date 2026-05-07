@@ -195,110 +195,19 @@ public sealed class WatermarkSnapshotIntegrationTests : IClassFixture<Integratio
         Assert.Equal("h3", snapshot3.StateHash);
     }
 
-    // ── SyncLog: HasOperationSucceeded — nová operace → false ─────────────
-
-    [FactIfAzureSql]
-    public async Task SyncLog_HasOperationSucceeded_ReturnsFalse_ForNewOperation()
-    {
-        var repo = _fix.CreateSyncLogRepository();
-        // Unikátní testovací operace — v DB neexistuje
-        var operation = "it_backfill_" + Guid.NewGuid().ToString("N")[..8];
-
-        var result = await repo.HasOperationSucceededAsync(operation, "cz");
-
-        Assert.False(result);
-    }
-
-    // ── SyncLog: HasOperationSucceeded — po zápisu success → true ─────────
-
-    [FactIfAzureSql]
-    public async Task SyncLog_HasOperationSucceeded_ReturnsTrue_AfterWriteSuccess()
-    {
-        var repo = _fix.CreateSyncLogRepository();
-        var operation = "it_backfill_" + Guid.NewGuid().ToString("N")[..8];
-        _fix.TrackSyncLogOperation(operation);
-
-        // Zápis úspěšného záznamu (simulace dokončeného backfillu)
-        await repo.WriteAsync(new SyncLogEntry
-        {
-            Operation = operation,
-            Status = "success",
-            PartnerRegion = "cz",
-            Severity = "Info",
-            CreatedAt = DateTime.UtcNow
-        });
-
-        var result = await repo.HasOperationSucceededAsync(operation, "cz");
-
-        Assert.True(result);
-    }
-
-    // ── SyncLog: HasOperationSucceeded — failed záznam → false ───────────
-
-    [FactIfAzureSql]
-    public async Task SyncLog_HasOperationSucceeded_ReturnsFalse_WhenOnlyFailedEntryExists()
-    {
-        var repo = _fix.CreateSyncLogRepository();
-        var operation = "it_backfill_" + Guid.NewGuid().ToString("N")[..8];
-        _fix.TrackSyncLogOperation(operation);
-
-        // Zápis neúspěšného záznamu
-        await repo.WriteAsync(new SyncLogEntry
-        {
-            Operation = operation,
-            Status = "failed",
-            PartnerRegion = "cz",
-            Severity = "Error",
-            CreatedAt = DateTime.UtcNow
-        });
-
-        var result = await repo.HasOperationSucceededAsync(operation, "cz");
-
-        Assert.False(result, "Pouhý failed záznam nesmí být vyhodnocen jako succeeded.");
-    }
-
-    // ── SyncLog: GetLastAsync — vrací záznamy v správném pořadí ───────────
-
-    [FactIfAzureSql]
-    public async Task SyncLog_GetLast_ReturnsRecentEntriesInDescOrder()
-    {
-        var repo = _fix.CreateSyncLogRepository();
-        var opOlder = "it_backfill_" + Guid.NewGuid().ToString("N")[..8];
-        var opNewer = "it_backfill_" + Guid.NewGuid().ToString("N")[..8];
-        _fix.TrackSyncLogOperation(opOlder);
-        _fix.TrackSyncLogOperation(opNewer);
-
-        // Zápis dvou záznamů s rozdílným časem — ověříme DESC pořadí
-        await repo.WriteAsync(new SyncLogEntry
-        {
-            Operation = opOlder,
-            Status = "success",
-            PartnerRegion = "pl",
-            Severity = "Info",
-            CreatedAt = DateTime.UtcNow.AddSeconds(-5)
-        });
-
-        await repo.WriteAsync(new SyncLogEntry
-        {
-            Operation = opNewer,
-            Status = "success",
-            PartnerRegion = "pl",
-            Severity = "Info",
-            CreatedAt = DateTime.UtcNow
-        });
-
-        var last = await repo.GetLastAsync(50);
-
-        Assert.NotEmpty(last);
-        var list = last.ToList();
-        var idxOlder = list.FindIndex(e => e.Operation == opOlder);
-        var idxNewer = list.FindIndex(e => e.Operation == opNewer);
-
-        Assert.True(idxOlder >= 0, $"Starší záznam '{opOlder}' nenalezen ve výsledku GetLastAsync.");
-        Assert.True(idxNewer >= 0, $"Novější záznam '{opNewer}' nenalezen ve výsledku GetLastAsync.");
-        Assert.True(idxNewer < idxOlder,
-            "Novější záznam musí být před starším (DESC pořadí dle created_at).");
-    }
+    // ── SyncLog integrační testy odstraněny ──────────────────────────────────
+    //
+    // Původní SyncLog_* testy mířily na bridge_sync_log v Azure SQL přes
+    // BridgeSyncLogRepository. Po migraci (PR "Replace ISyncLogRepository
+    // with IPartnerSyncLog") žije sync log v PartnerSyncLog v FieldForce DB,
+    // který vlastní FF tým. Integrační testy proti PartnerSyncLog vyžadují:
+    //   1. Test connection string do FieldForce DB (nový BRIDGE_IT_FF_DB_CONN env).
+    //   2. Cleanup v PartnerSyncLog tabulce.
+    //   3. Koordinaci s FF týmem na test schéma a izolaci dat.
+    //
+    // Unit testy (Bridge.Tests) pokrývají logiku PartnerSyncLogRepository přes
+    // IPartnerSyncLog rozhraní. Re-implementace integračních testů je
+    // následný úkol (po setupu FF test DB).
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
