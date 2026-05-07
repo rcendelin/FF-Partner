@@ -2,6 +2,11 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 WORKDIR /app
 EXPOSE 8080
 
+# curl je nutný pro HEALTHCHECK — base image ho ve výchozím stavu neobsahuje
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Nepouštět jako root
 RUN addgroup --system --gid 1001 bridge && \
     adduser --system --uid 1001 --ingroup bridge bridge
@@ -30,6 +35,6 @@ WORKDIR /app
 COPY --from=publish /app/publish .
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD curl --silent --fail http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["dotnet", "Bridge.Api.dll"]

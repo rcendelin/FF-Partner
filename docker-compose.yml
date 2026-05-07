@@ -1,6 +1,8 @@
 services:
   ff-partner-bridge:
-    image: registry.cendelin.eu/ff-partner-bridge:latest
+    # IMAGE_TAG je předán z CI deploy skriptu (sekvenční číslo pipeline).
+    # Lokálně bez proměnné se použije :latest.
+    image: registry.cendelin.eu/ff-partner-bridge:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -22,7 +24,7 @@ services:
       - servicebus_conn
       - bridge_admin_api_key
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3
