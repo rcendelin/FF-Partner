@@ -1,7 +1,15 @@
-# Azure ACR — založení a napojení na GitHub Actions build
+# Azure ACR + GitHub Actions CI/CD — kompletní průvodce
 
-Návod pokrývá kompletní setup pro Bridge image:
+Dokumentace pro CI/CD pipeline FF-Partner Bridge: jak Azure Container Registry,
+GitHub Actions workflow a ruční deploy zapadají dohromady.
 
+GitHub Actions ([`.github/workflows/bridge.yml`](../.github/workflows/bridge.yml))
+je **kanonický CI/CD pipeline**. GitLab repozitář
+(`git.xtuning.cz/fieldforce/partner-bridge`) je read-only mirror bez runneru.
+
+Návod pokrývá:
+
+0. [Přehled pipeline](#0-přehled-pipeline)
 1. [Vytvoření Azure Container Registry](#1-vytvoření-azure-container-registry)
 2. [Service Principal pro GitHub Actions (push)](#2-service-principal-pro-github-actions-push)
 3. [Nastavení GitHub Secrets](#3-nastavení-github-secrets)
@@ -9,6 +17,68 @@ Návod pokrývá kompletní setup pro Bridge image:
 5. [Nastavení deploy serveru pro pull z ACR](#5-nastavení-deploy-serveru-pro-pull-z-acr)
 6. [Rollback a správa tagů](#6-rollback-a-správa-tagů)
 7. [Řešení problémů](#7-řešení-problémů)
+
+---
+
+## 0. Přehled pipeline
+
+```
+push na main / develop / PR
+        │
+        ▼
+┌───────────────────┐
+│  build-and-test   │  dotnet restore → build → test
+│  (vždy)           │  artefakty: TestResults/**/*.trx
+└────────┬──────────┘
+         │ pouze push na main
+         ▼
+┌───────────────────┐
+│     acr-push      │  Azure SP login → az acr login →
+│     (auto)        │  docker build → docker push do ACR
+│                   │  tag: ${{ github.run_number }}
+└───────────────────┘
+         │
+         ▼  (ruční krok mimo pipeline)
+┌───────────────────┐
+│  Manuální deploy  │  ssh deploy@xtuning → docker pull →
+│   na on-premise   │  docker compose up
+└───────────────────┘
+```
+
+**Dvě stages v GitHub Actions** + ruční deploy.
+
+| Stage | Spouštění | Co dělá |
+|---|---|---|
+| `build-and-test` | PR + push na `main`/`develop` | `dotnet restore` → `build --configuration Release` → `test --logger trx`; TRX artefakty 30 dní |
+| `acr-push` | pouze push na `main` | Azure SP login (`azure/login@v2`) → `az acr login` → docker build s labely (`git-commit`, `build-id`) → push do `${ACR_NAME}.azurecr.io/ff-partner-bridge:${run_number}` |
+
+**Tagování image:** `${{ github.run_number }}` (sekvenční, např. `1`, `2`, `42`).
+Image se **nepushuje** s tagem `:latest` — nasazení je deterministické.
+
+**Deploy:** SSH na on-premise XTuning probíhá ručně (`docker pull` + `docker compose up`).
+Důvod: deploy server není veřejně dostupný a nemá přístupný runner.
+Postup viz [sekce 5](#5-nastavení-deploy-serveru-pro-pull-z-acr) a [6](#6-rollback-a-správa-tagů).
+
+### Kdy se pipeline spouští
+
+| Událost                          | build-and-test | acr-push    |
+|----------------------------------|----------------|-------------|
+| Push na `main`                   | Ano            | Ano (auto)  |
+| Push na `develop`                | Ano            | Ne          |
+| Push na jinou větev              | Ne             | Ne          |
+| Pull Request (open / update)     | Ano            | Ne          |
+
+### Globální proměnné workflow
+
+| Proměnná | Hodnota | Popis |
+|---|---|---|
+| `IMAGE_NAME` | `ff-partner-bridge` | Název image (registry je `${ACR_NAME}.azurecr.io`) |
+| `DOTNET_VERSION` | `9.0.x` | SDK verze. `.slnx` solution formát vyžaduje SDK 9.0.200+. TFM zůstává `net8.0`. |
+
+### NuGet cache
+
+Workflow cacheuje NuGet packages pomocí `actions/cache@v4` s klíčem podle hashe
+všech `.csproj` souborů. Cache se invaliduje pouze při změně závislostí.
 
 ---
 

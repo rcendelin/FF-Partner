@@ -93,8 +93,10 @@ curl http://localhost:8080/health
 # → {"status":"healthy",...}
 ```
 
-V produkci se image distribuuje přes `registry.cendelin.eu/ff-partner-bridge:<TAG>`
-a deploy probíhá přes CI (viz níže). Lokální `docker compose` použije `:latest`.
+V produkci se image distribuuje přes `${ACR_NAME}.azurecr.io/ff-partner-bridge:<TAG>`
+v Azure Container Registry (push z GitHub Actions, pull manuálně na on-premise
+deploy serveru). Lokální `docker compose` použije `:latest`. Detaily viz
+[`docs/AZURE-ACR-SETUP.md`](docs/AZURE-ACR-SETUP.md).
 
 ---
 
@@ -144,10 +146,12 @@ a [`infra/F0-06-docker-secrets-init.sh`](infra/F0-06-docker-secrets-init.sh).
 (bez runneru).
 
 - **GitHub Actions** ([`.github/workflows/bridge.yml`](.github/workflows/bridge.yml))
-  — kanonický pipeline:
-  **build-and-test** → **docker-push** (auto na `main`) →
-  **deploy** (Environment `production` approval). Detaily v
-  [`docs/GITHUB-CICD.md`](docs/GITHUB-CICD.md).
+  — pipeline: **build-and-test** (PR + push na `main`/`develop`) →
+  **acr-push** (auto na `main`, build + push image do Azure Container Registry
+  přes Service Principal). Image tag je sekvenční číslo runu (`github.run_number`).
+- **Deploy** na on-premise XTuning probíhá **ručně** (`docker pull` +
+  `docker compose up`). GitHub-hosted runner nemá přímý přístup do interní sítě
+  XTuning. Postup viz [`docs/AZURE-ACR-SETUP.md`](docs/AZURE-ACR-SETUP.md) sekce 5–6.
 - **GitLab** (`git.xtuning.cz/fieldforce/partner-bridge`) — read-only mirror,
   žádný CI runner, žádný workflow soubor.
 
@@ -157,12 +161,15 @@ a [`infra/F0-06-docker-secrets-init.sh`](infra/F0-06-docker-secrets-init.sh).
 
 | Dokument | Obsah |
 |---|---|
-| [`docs/GITHUB-CICD.md`](docs/GITHUB-CICD.md) | Detailní průvodce GitHub Actions pipeline + troubleshooting |
+| [`CLAUDE.md`](CLAUDE.md) | Primární průvodce projektem — architektura, schémata, rozhodnutí |
+| [`docs/AZURE-ACR-SETUP.md`](docs/AZURE-ACR-SETUP.md) | CI/CD pipeline + Azure ACR setup + deploy postup + troubleshooting |
+| [`docs/FIELDFORCE-INTEGRATION-SPEC.md`](docs/FIELDFORCE-INTEGRATION-SPEC.md) | Service Bus message kontrakty pro FieldForce stranu integrace |
 | [`docs/geo-structure.md`](docs/geo-structure.md) | Geografický routing CZ/PL/HU/US, hierarchie GAIA číselníků |
 | [`docs/F0-08-owner-mapping-and-sla.md`](docs/F0-08-owner-mapping-and-sla.md) | Owner mapping + SLA thresholds + KQL alerty |
 | [`docs/F1-12-go-no-go-checklist.md`](docs/F1-12-go-no-go-checklist.md) | Manuální go/no-go validace mezi fázemi |
 | [`runbooks/F3-01-gaia-shutdown-pull.md`](runbooks/F3-01-gaia-shutdown-pull.md) | Vypnutí starého GAIA pull (Pipedrive cron) |
 | [`runbooks/F3-02-gaia-shutdown-push.md`](runbooks/F3-02-gaia-shutdown-push.md) | Vypnutí starého GAIA push (Pipedrive webhooks) |
+| [`patches/partner3-client-ff-readonly.md`](patches/partner3-client-ff-readonly.md) | Partner3 admin patch — banner + soft-guard pro FF spravované klienty |
 | [`infra/`](infra/) | Bicep IaC pro Service Bus, Key Vault + setup skripty |
 
 ---

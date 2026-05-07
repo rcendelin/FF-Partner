@@ -56,3 +56,6 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 desktop.ini
+
+## Claude Code (lokální IDE state — worktrees, settings, scheduled tasks)
+.claude/
