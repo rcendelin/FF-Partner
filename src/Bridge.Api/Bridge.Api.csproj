@@ -7,8 +7,12 @@
 
   <ItemGroup>
     <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.20.1" />
+    <!--
+      Pozn.: NEAKTUALIZOVAT na 3.1.0 — 3.1.0 přináší Microsoft.ApplicationInsights 3.x,
+      což je v konfliktu se Serilog.Sinks.ApplicationInsights, který vyžaduje < 3.0.0.
+    -->
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="3.0.0" />
-    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.201">
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.203">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -16,11 +20,5 @@
     <PackageReference Include="Serilog.Sinks.ApplicationInsights" Version="5.0.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
   </ItemGroup>
-
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
 
 </Project>
