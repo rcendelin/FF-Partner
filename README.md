@@ -140,13 +140,14 @@ a [`infra/F0-06-docker-secrets-init.sh`](infra/F0-06-docker-secrets-init.sh).
 
 ## CI/CD
 
-Projekt má **dva paralelní pipelines** (jeden je zrcadlo druhého):
+**GitLab je primární CI/CD platforma**, GitHub je pouze read-only mirror.
 
-- **GitHub Actions:** [`.github/workflows/bridge.yml`](.github/workflows/bridge.yml)
-- **GitLab CI:** [`.gitlab-ci.yml`](.gitlab-ci.yml) — viz [`docs/GITLAB-CICD.md`](docs/GITLAB-CICD.md)
-
-Tři stages: **build-and-test** (vždy) → **docker-push** (jen `main`, automaticky) →
-**deploy-production** (jen `main`, manuální gate / Environment approval).
+- **GitLab CI** ([`.gitlab-ci.yml`](.gitlab-ci.yml)) — kanonický pipeline:
+  **build-and-test** → **docker-push** (auto na `main`) →
+  **deploy-production** (manuální gate). Detaily v [`docs/GITLAB-CICD.md`](docs/GITLAB-CICD.md).
+- **GitHub Actions** ([`.github/workflows/bridge.yml`](.github/workflows/bridge.yml))
+  — pouze **build + test** pro PR validaci. Žádný docker push ani deploy
+  (chybí registry a deploy secrets).
 
 ---
 
