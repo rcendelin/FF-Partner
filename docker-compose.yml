@@ -1,8 +1,9 @@
 services:
   ff-partner-bridge:
-    # IMAGE_TAG je předán z CI deploy skriptu (sekvenční číslo pipeline).
+    # IMAGE_TAG je předán z CI deploy skriptu (github.run_number).
     # Lokálně bez proměnné se použije :latest.
-    image: registry.cendelin.eu/ff-partner-bridge:${IMAGE_TAG:-latest}
+    # ACR login server musí odpovídat hodnotě v .github/workflows/bridge.yml (env.ACR_LOGIN_SERVER).
+    image: crffpartnerbridge.azurecr.io/ff-partner-bridge:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile

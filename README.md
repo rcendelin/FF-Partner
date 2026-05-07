@@ -93,8 +93,9 @@ curl http://localhost:8080/health
 # → {"status":"healthy",...}
 ```
 
-V produkci se image distribuuje přes `registry.cendelin.eu/ff-partner-bridge:<TAG>`
-a deploy probíhá přes CI (viz níže). Lokální `docker compose` použije `:latest`.
+V produkci se image distribuuje přes Azure Container Registry
+(`<acr>.azurecr.io/ff-partner-bridge:<TAG>`) a deploy probíhá přes CI
+(viz níže). Lokální `docker compose` použije `:latest`.
 
 ---
 

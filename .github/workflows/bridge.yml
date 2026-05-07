@@ -2,11 +2,17 @@
 #
 # Tři stages:
 #   1. build-and-test  (vždy: PR + push na main/develop)
-#   2. docker-push     (auto na main: build + push do registry.cendelin.eu)
+#   2. docker-push     (auto na main: build + push do Azure Container Registry přes OIDC)
 #   3. deploy          (Environment 'production' approval: SSH na on-prem XTuning)
 #
 # GitLab repo (git.xtuning.cz/fieldforce/partner-bridge) je read-only mirror,
 # žádný runner. Detaily viz docs/GITHUB-CICD.md.
+#
+# Auth model:
+#   - ACR push: OIDC federated identity (Entra ID App Registration). Žádné
+#     dlouhodobé secrets — pouze CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID jako repo secrets.
+#   - SSH deploy: SSH klíč v repo secrets (DEPLOY_SSH_KEY).
+#   - Deploy server pull z ACR: token uložený lokálně (viz infra/F0-09-deploy-token-setup.sh).
 name: CI/CD
 
 on:
@@ -15,8 +21,16 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Defaultní permissions — vědomě restriktivní
+permissions:
+  contents: read
+
 env:
-  DOCKER_IMAGE: registry.cendelin.eu/ff-partner-bridge
+  # ACR_NAME a ACR_LOGIN_SERVER musí odpovídat hodnotám z infra/F0-09-acr-setup.sh.
+  # Aktualizovat ZÁROVEŇ s docker-compose.yml na deploy serveru.
+  ACR_NAME: crffpartnerbridge
+  ACR_LOGIN_SERVER: crffpartnerbridge.azurecr.io
+  IMAGE_REPO: ff-partner-bridge
   # Solution používá .slnx formát — vyžaduje SDK 9.0.200+. TFM zůstává net8.0.
   DOTNET_VERSION: '9.0.x'
 
@@ -71,33 +85,42 @@ jobs:
     # Spustit pouze na push do main — ne na PR ani develop
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
+    # OIDC token request vyžaduje id-token: write.
+    # Override defaultního permissions pro tento job.
+    permissions:
+      contents: read
+      id-token: write
+
     outputs:
       image-tag: ${{ steps.build.outputs.image-tag }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docker login
-        run: >
-          echo "${{ secrets.REGISTRY_PASSWORD }}"
-          | docker login registry.cendelin.eu
-            --username "${{ secrets.REGISTRY_USERNAME }}"
-            --password-stdin
+      # Federated identity (žádné AZURE_CLIENT_SECRET) — viz infra/F0-09-github-oidc-setup.sh
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Docker build
+      - name: ACR login
+        run: az acr login --name "${{ env.ACR_NAME }}"
+
+      - name: Docker build & push
         id: build
         run: |
           # Používáme run_number (sekvenční) místo run_id (globální velké číslo)
           IMAGE_TAG="${{ github.run_number }}"
+          IMAGE_FULL="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_REPO }}:${IMAGE_TAG}"
           docker build \
-            --tag "${{ env.DOCKER_IMAGE }}:${IMAGE_TAG}" \
+            --tag "${IMAGE_FULL}" \
             --label "git-commit=${{ github.sha }}" \
             --label "build-id=${{ github.run_number }}" \
             .
+          docker push "${IMAGE_FULL}"
           echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Docker push
-        run: docker push "${{ env.DOCKER_IMAGE }}:${{ steps.build.outputs.image-tag }}"
 
   deploy:
     name: Deploy on-premise (XTuning)
@@ -130,13 +153,15 @@ jobs:
             exit 1
           fi
 
+          # Deploy server musí mít předem nakonfigurovaný `docker login` do ACR
+          # (viz infra/F0-09-deploy-token-setup.sh).
           ssh \
             -i ~/.ssh/deploy_key \
             -o UserKnownHostsFile=~/.ssh/known_hosts \
             -o StrictHostKeyChecking=yes \
             "deploy@${DEPLOY_HOST}" \
             "cd /opt/ff-partner-bridge \
-              && docker pull registry.cendelin.eu/ff-partner-bridge:${IMAGE_TAG} \
+              && docker pull ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_REPO }}:${IMAGE_TAG} \
               && IMAGE_TAG=${IMAGE_TAG} docker compose up -d --no-build ff-partner-bridge \
               && echo 'Deploy dokoncen:' \$(date -u)"
 

@@ -69,7 +69,7 @@ runner ani žádné speciální nastavení nepotřebuje:
 
 Runner musí umět:
 
-- HTTPS na `registry.cendelin.eu` (push image)
+- HTTPS na `<acr>.azurecr.io` (push image, dostupný z internetu)
 - SSH (port 22 default) na deploy server (`DEPLOY_HOST`)
 
 Pokud je deploy server za firewallem bez veřejného přístupu, je potřeba
@@ -85,8 +85,12 @@ IP rozsahu pro [GitHub Actions runnery](https://api.github.com/meta).
 
 ### Container registry
 
-Image se pushuje do `registry.cendelin.eu`. Registry musí být dostupná
-jak z GitHub runneru (push), tak z deploy serveru (pull).
+Image se pushuje do **Azure Container Registry** (`<name>.azurecr.io`).
+Registry musí být dostupná z GitHub runneru (push přes OIDC, public endpoint)
+i z deploy serveru (pull přes scope token, public endpoint).
+
+ACR setup viz [`infra/F0-09-acr.bicep`](../infra/F0-09-acr.bicep) +
+[`infra/F0-09-acr-setup.sh`](../infra/F0-09-acr-setup.sh).
 
 ---
 
@@ -96,7 +100,9 @@ Definovány v `env:` na úrovni workflow — platí pro všechny jobs:
 
 | Proměnná | Hodnota | Popis |
 |---|---|---|
-| `DOCKER_IMAGE` | `registry.cendelin.eu/ff-partner-bridge` | Cílový repozitář v registry |
+| `ACR_NAME` | `crffpartnerbridge` | Název Azure Container Registry (viz [`infra/F0-09-acr.bicep`](../infra/F0-09-acr.bicep)) |
+| `ACR_LOGIN_SERVER` | `crffpartnerbridge.azurecr.io` | Login server ACR — musí odpovídat `image:` v `docker-compose.yml` |
+| `IMAGE_REPO` | `ff-partner-bridge` | Název repository v rámci ACR |
 | `DOTNET_VERSION` | `9.0.x` | SDK verze instalovaná přes `actions/setup-dotnet`. Nutná kvůli `.slnx` solution formátu. TFM projektů je `net8.0`. |
 
 ---
@@ -163,18 +169,45 @@ TRX soubory jsou ke stažení v UI: **Actions → run → Summary → Artifacts*
 **Job:** `docker-push`
 **Runner:** `ubuntu-22.04` (Docker je v image preinstalován)
 **Spouštění:** pouze push na `main` (`if: github.ref == 'refs/heads/main' && github.event_name == 'push'`)
+**Auth:** OIDC federated identity → AcrPush role na ACR
 
 ### Co dělá
 
 1. Checkout repa
-2. `docker login` do `registry.cendelin.eu` (heslo přes stdin)
-3. `docker build` s tagem `${{ github.run_number }}` + labely
-4. `docker push`
+2. `azure/login@v2` — výměna OIDC tokenu za Azure access token (federated identity)
+3. `az acr login` — Docker login do `<acr>.azurecr.io` přes Azure access token
+4. `docker build` s tagem `${{ github.run_number }}` + labely
+5. `docker push`
+
+### OIDC autentizace bez secrets
+
+```yaml
+permissions:
+  contents: read
+  id-token: write   # nutné pro OIDC token request
+
+steps:
+  - uses: azure/login@v2
+    with:
+      client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+```
+
+`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` **nejsou
+credentials** — jsou to veřejné identifikátory. Trust se zakládá na
+federated credential v Entra ID (subject =
+`repo:rcendelin/FF-Partner:ref:refs/heads/main`). GitHub runner si
+vyžádá OIDC token od `token.actions.githubusercontent.com`, Entra ID
+ho ověří a vydá Azure access token na omezenou dobu (~ 1 hodina).
+
+Setup federated identity viz [`infra/F0-09-github-oidc-setup.sh`](../infra/F0-09-github-oidc-setup.sh).
 
 ### Tagování image
 
 ```yaml
 IMAGE_TAG="${{ github.run_number }}"
+IMAGE_FULL="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_REPO }}:${IMAGE_TAG}"
 ```
 
 `github.run_number` je sekvenční číslo workflow runu v rámci repa
@@ -182,7 +215,7 @@ IMAGE_TAG="${{ github.run_number }}"
 který je globálně unikátní a má velká čísla. Výsledný tag:
 
 ```
-registry.cendelin.eu/ff-partner-bridge:42
+crffpartnerbridge.azurecr.io/ff-partner-bridge:42
 ```
 
 Tag se předává do `deploy` jobu přes `outputs` mechanismus (image-tag).
@@ -196,21 +229,6 @@ Tag se předává do `deploy` jobu přes `outputs` mechanismus (image-tag).
 
 Umožňují zpětnou dohledatelnost: ze spuštěného containeru lze zjistit
 přesný commit i číslo runu.
-
-### Přihlášení do registry
-
-```yaml
-- name: Docker login
-  run: >
-    echo "${{ secrets.REGISTRY_PASSWORD }}"
-    | docker login registry.cendelin.eu
-      --username "${{ secrets.REGISTRY_USERNAME }}"
-      --password-stdin
-```
-
-Heslo se čte ze stdin, nikoli jako argument příkazové řádky. To zabrání
-jeho výskytu ve výpisu procesů (`ps aux`) a logu actionu (GitHub navíc
-secrets automaticky maskuje v logu).
 
 ---
 
@@ -275,18 +293,41 @@ případném selhání nebo timeoutu.
 
 Přejdi do **GitHub → repo → Settings → Secrets and variables → Actions → New repository secret**:
 
-| Secret | Popis |
-|---|---|
-| `REGISTRY_USERNAME` | Uživatelské jméno pro `registry.cendelin.eu` |
-| `REGISTRY_PASSWORD` | Heslo nebo token pro registry |
-| `DEPLOY_SSH_KEY` | Celý obsah privátního SSH klíče (včetně `-----BEGIN` a `-----END`) |
-| `DEPLOY_KNOWN_HOSTS` | Výstup `ssh-keyscan -H <deploy-hostname>` |
-| `DEPLOY_HOST` | Hostname nebo IP deploy serveru |
-| `BRIDGE_HEALTH_URL` | (volitelné) Výchozí: `http://localhost:8080/health` |
+| Secret | Popis | Zdroj hodnoty |
+|---|---|---|
+| `AZURE_CLIENT_ID` | App Registration appId (federated identity) | výstup `infra/F0-09-github-oidc-setup.sh` |
+| `AZURE_TENANT_ID` | Entra ID tenant ID | `az account show --query tenantId -o tsv` |
+| `AZURE_SUBSCRIPTION_ID` | Subscription ID, kde je ACR | `az account show --query id -o tsv` |
+| `DEPLOY_SSH_KEY` | Celý obsah privátního SSH klíče (`-----BEGIN`...`-----END`) | `ssh-keygen -t ed25519` |
+| `DEPLOY_KNOWN_HOSTS` | Výstup `ssh-keyscan -H <deploy-hostname>` | viz níže |
+| `DEPLOY_HOST` | Hostname nebo IP deploy serveru | — |
+| `BRIDGE_HEALTH_URL` | (volitelné) Výchozí: `http://localhost:8080/health` | — |
 
-> Pro extra ochranu lze sensitive secrets svázat s konkrétním Environment
-> (`production`) místo s repem — pak jsou dostupné jen v jobech
+> **Pozor:** `AZURE_CLIENT_ID` a další Azure ID-čka **nejsou credentials** —
+> jsou to veřejné identifikátory. Federated identity v Entra ID
+> nahrazuje password/secret. Žádné `AZURE_CLIENT_SECRET` se neukládá.
+
+> Pro extra ochranu lze sensitive secrets (DEPLOY_SSH_KEY) svázat s konkrétním
+> Environment (`production`) místo s repem — pak jsou dostupné jen v jobech
 > referencujících `environment: production` (tj. `deploy`).
+
+### Setup federated identity (jednorázově)
+
+```bash
+export RG="rg-ff-partner-bridge"
+export ACR_NAME="crffpartnerbridge"
+export GITHUB_REPO="rcendelin/FF-Partner"
+bash infra/F0-09-github-oidc-setup.sh
+```
+
+Skript:
+1. Vytvoří App Registration `sp-github-actions-ff-partner-bridge` v Entra ID
+2. Vytvoří Service Principal pro tuto App
+3. Nastaví federated credential — důvěra ke konkrétnímu repo + branch
+4. Přiřadí roli `AcrPush` scope na konkrétní ACR (ne celá subscription)
+5. Vypíše hodnoty pro GitHub repo secrets
+
+Setup ACR samotného: [`infra/F0-09-acr-setup.sh`](../infra/F0-09-acr-setup.sh).
 
 ### Jak získat DEPLOY_KNOWN_HOSTS
 
@@ -315,6 +356,39 @@ Na deploy serveru:
 echo "<obsah deploy_key.pub>" >> /home/deploy/.ssh/authorized_keys
 chmod 600 /home/deploy/.ssh/authorized_keys
 ```
+
+### Pull credentials pro deploy server (ACR token)
+
+Deploy server nemá OIDC — potřebuje long-lived credentials pro `docker pull`.
+
+Generování (na trusted stroji s `az login`):
+
+```bash
+export RG="rg-ff-partner-bridge"
+export ACR_NAME="crffpartnerbridge"
+bash infra/F0-09-deploy-token-setup.sh
+# → vytvoří `acr-token-deploy-server-pull.txt` (chmod 600)
+```
+
+Skript:
+1. Vytvoří **scope map** omezenou na repo `ff-partner-bridge` (read-only)
+2. Vytvoří **token** s touto scope mapou
+3. Vygeneruje password1 s expirací 1 rok (rotace povinná)
+
+Na deploy serveru:
+
+```bash
+# Skopírovat password z acr-token-deploy-server-pull.txt (scp / KeePass)
+cat <password-soubor> | docker login crffpartnerbridge.azurecr.io \
+  --username 'deploy-server-pull' --password-stdin
+
+# Smazat password soubor
+shred -u <password-soubor>
+```
+
+> **Pozn.:** ACR scope tokens vyžadují **Premium tier**. Při Basic/Standard
+> tieru skript nabídne alternativu se Service Principal + AcrPull rolí
+> (long-lived secret místo tokenu — viz výstup skriptu).
 
 ---
 
@@ -347,7 +421,7 @@ Pokud nechceš dávat deploy uživateli plný přístup k Dockeru:
 
 ```
 # /etc/sudoers.d/deploy-bridge
-deploy ALL=(ALL) NOPASSWD: /usr/bin/docker pull registry.cendelin.eu/ff-partner-bridge:*, \
+deploy ALL=(ALL) NOPASSWD: /usr/bin/docker pull crffpartnerbridge.azurecr.io/ff-partner-bridge:*, \
                             /usr/bin/docker compose -f /opt/ff-partner-bridge/docker-compose.yml up *
 ```
 
@@ -398,9 +472,9 @@ Ruční trigger (workflow_dispatch)| —              | —           | —  (ne
 Každý build na `main` vytvoří image s tagem `${{ github.run_number }}`:
 
 ```
-registry.cendelin.eu/ff-partner-bridge:1
-registry.cendelin.eu/ff-partner-bridge:2
-registry.cendelin.eu/ff-partner-bridge:42
+crffpartnerbridge.azurecr.io/ff-partner-bridge:1
+crffpartnerbridge.azurecr.io/ff-partner-bridge:2
+crffpartnerbridge.azurecr.io/ff-partner-bridge:42
 ```
 
 Deploy krok vždy nasadí konkrétní tag — nikdy `latest`. Deterministické
@@ -418,8 +492,14 @@ IMAGE_TAG=<starší-run-number> docker compose up -d --no-build ff-partner-bridg
 Číslo runu najdeš v GitHub UI v historii Actions, nebo v Docker image labelu:
 
 ```bash
-docker inspect registry.cendelin.eu/ff-partner-bridge:<tag> \
+docker inspect crffpartnerbridge.azurecr.io/ff-partner-bridge:<tag> \
   --format '{{index .Config.Labels "build-id"}}'
+```
+
+### Listing dostupných tagů
+
+```bash
+az acr repository show-tags --name crffpartnerbridge --repository ff-partner-bridge --orderby time_desc
 ```
 
 ### Čištění starých image
@@ -443,11 +523,12 @@ V případě výpadku GitHub Actions nebo nutnosti hotfix deploye:
 ssh deploy@<deploy-host>
 cd /opt/ff-partner-bridge
 
-# Přihlásit se do registry (jednorázově)
-docker login registry.cendelin.eu
+# Login do ACR (pokud ještě není uložen v ~/.docker/config.json — viz sekce 7)
+echo "<token-password>" | docker login crffpartnerbridge.azurecr.io \
+  --username 'deploy-server-pull' --password-stdin
 
 # Stáhnout konkrétní verzi
-docker pull registry.cendelin.eu/ff-partner-bridge:<tag>
+docker pull crffpartnerbridge.azurecr.io/ff-partner-bridge:<tag>
 
 # Nasadit
 IMAGE_TAG=<tag> docker compose up -d --no-build ff-partner-bridge
@@ -469,14 +550,33 @@ přidej privátní NuGet feed v `nuget.config` v kořeni repa.
 
 ---
 
-### docker-push selže na `Docker login`
+### docker-push selže na `Azure login` (OIDC)
 
-**Příznaky:** `Cannot perform an interactive login from a non TTY device`
-nebo `Error response from daemon: unauthorized`
+**Příznaky:** `AADSTS70021: No matching federated identity record found`
+nebo `Error: Login failed with Error: Az CLI Login failed.`
 
 **Příčiny a řešení:**
-- Prázdné secrets (`REGISTRY_USERNAME` / `REGISTRY_PASSWORD` nejsou nakonfigurované) → doplň v repo settings (viz [sekce 7](#7-nastavení-secrets-v-github))
-- Špatný uživatel/heslo → ověř v registry
+- Federated credential subject neodpovídá události → ověř, že subject je
+  `repo:<owner>/<repo>:ref:refs/heads/main` a workflow běží z `main` po pushi.
+  Pro PR by musel existovat samostatný credential s `pull_request` subject.
+- Špatné `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` → ověř hodnoty z výstupu
+  `infra/F0-09-github-oidc-setup.sh`.
+- Workflow nemá `permissions: id-token: write` → bez něj GitHub nevydá OIDC token.
+
+### docker-push selže na `az acr login`
+
+**Příznaky:** `Forbidden` nebo `unauthorized: authentication required`
+
+**Příčiny a řešení:**
+- Role `AcrPush` není přiřazena na ACR scope → re-run
+  `infra/F0-09-github-oidc-setup.sh` nebo manuálně:
+  ```bash
+  az role assignment create \
+    --assignee <AZURE_CLIENT_ID> \
+    --role AcrPush \
+    --scope $(az acr show --name <acr> --resource-group <rg> --query id -o tsv)
+  ```
+- Propagace role assignmentu trvá až 1–2 minuty po vytvoření — re-run workflow.
 
 ---
 
