@@ -140,14 +140,16 @@ a [`infra/F0-06-docker-secrets-init.sh`](infra/F0-06-docker-secrets-init.sh).
 
 ## CI/CD
 
-**GitLab je primární CI/CD platforma**, GitHub je pouze read-only mirror.
+**GitHub Actions je primární CI/CD platforma**, GitLab je read-only mirror
+(bez runneru).
 
-- **GitLab CI** ([`.gitlab-ci.yml`](.gitlab-ci.yml)) — kanonický pipeline:
-  **build-and-test** → **docker-push** (auto na `main`) →
-  **deploy-production** (manuální gate). Detaily v [`docs/GITLAB-CICD.md`](docs/GITLAB-CICD.md).
 - **GitHub Actions** ([`.github/workflows/bridge.yml`](.github/workflows/bridge.yml))
-  — pouze **build + test** pro PR validaci. Žádný docker push ani deploy
-  (chybí registry a deploy secrets).
+  — kanonický pipeline:
+  **build-and-test** → **docker-push** (auto na `main`) →
+  **deploy** (Environment `production` approval). Detaily v
+  [`docs/GITHUB-CICD.md`](docs/GITHUB-CICD.md).
+- **GitLab** (`git.xtuning.cz/fieldforce/partner-bridge`) — read-only mirror,
+  žádný CI runner, žádný workflow soubor.
 
 ---
 
@@ -155,7 +157,7 @@ a [`infra/F0-06-docker-secrets-init.sh`](infra/F0-06-docker-secrets-init.sh).
 
 | Dokument | Obsah |
 |---|---|
-| [`docs/GITLAB-CICD.md`](docs/GITLAB-CICD.md) | Detailní průvodce GitLab pipeline + troubleshooting |
+| [`docs/GITHUB-CICD.md`](docs/GITHUB-CICD.md) | Detailní průvodce GitHub Actions pipeline + troubleshooting |
 | [`docs/geo-structure.md`](docs/geo-structure.md) | Geografický routing CZ/PL/HU/US, hierarchie GAIA číselníků |
 | [`docs/F0-08-owner-mapping-and-sla.md`](docs/F0-08-owner-mapping-and-sla.md) | Owner mapping + SLA thresholds + KQL alerty |
 | [`docs/F1-12-go-no-go-checklist.md`](docs/F1-12-go-no-go-checklist.md) | Manuální go/no-go validace mezi fázemi |
@@ -181,5 +183,5 @@ Vývoj probíhá ve **fázích F0–F4**, postupný rollout vůči GAIA / Pipedr
 
 ## Repozitáře
 
-- **GitLab (primární):** https://git.xtuning.cz/fieldforce/partner-bridge
-- **GitHub (mirror):** https://github.com/rcendelin/FF-Partner
+- **GitHub (primární):** https://github.com/rcendelin/FF-Partner
+- **GitLab (mirror):** https://git.xtuning.cz/fieldforce/partner-bridge
