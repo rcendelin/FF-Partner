@@ -4,7 +4,6 @@ using Bridge.Application.Interfaces;
 using Bridge.Application.Services;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
-using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner.Repositories;
 using Microsoft.Extensions.DependencyInjection;

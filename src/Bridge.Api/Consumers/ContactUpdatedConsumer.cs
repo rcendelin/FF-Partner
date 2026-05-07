@@ -3,7 +3,6 @@ using Bridge.Api.Telemetry;
 using Bridge.Application.Interfaces;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
-using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner.Repositories;
 using Microsoft.Extensions.DependencyInjection;

@@ -7,7 +7,6 @@ using Bridge.Domain.Enums;
 using Bridge.Domain.Exceptions;
 using Bridge.Domain.Messages;
 using Bridge.Domain.Models;
-using Bridge.Infrastructure.FieldForce;
 using Bridge.Infrastructure.Mapping;
 using Bridge.Infrastructure.Partner;
 using Bridge.Infrastructure.Partner.Repositories;
@@ -609,9 +608,12 @@ public sealed class CompanySyncConsumer : BackgroundService
     {
         if (message is not null)
         {
+            // CancellationToken.None — terminální audit musí proběhnout i při shutdown
+            // (konzistentní s publish na řádku ~635)
             await _syncLog.WriteAsync(message.CompanyId, message.MessageId,
                 "BridgeFailed", "Inbound", operation, "Failed",
-                errorCode: errorCode, errorMessage: errorMsg);
+                errorCode: errorCode, errorMessage: errorMsg,
+                ct: CancellationToken.None);
         }
 
         var failed = new CompanySyncFailedMessage
