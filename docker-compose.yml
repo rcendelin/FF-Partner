@@ -1,8 +1,9 @@
 services:
   ff-partner-bridge:
-    # IMAGE_TAG je předán z CI deploy skriptu (sekvenční číslo pipeline).
-    # Lokálně bez proměnné se použije :latest.
-    image: registry.cendelin.eu/ff-partner-bridge:${IMAGE_TAG:-latest}
+    # Image v Azure Container Registry — push z GitHub Actions přes Service Principal.
+    # ACR_NAME je samotný název registru (bez .azurecr.io); IMAGE_TAG je sekvenční
+    # číslo pipeline (github.run_number). Lokálně bez proměnné se použije :latest.
+    image: ${ACR_NAME}.azurecr.io/ff-partner-bridge:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile

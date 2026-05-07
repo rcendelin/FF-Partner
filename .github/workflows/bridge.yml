@@ -1,10 +1,10 @@
 # GitHub Actions — kanonický CI/CD pipeline pro FF-Partner Bridge.
 #
-# Tři stages:
+# Dva stages:
 #   1. build-and-test  (vždy: PR + push na main/develop)
-#   2. docker-push     (auto na main: build + push do registry.cendelin.eu)
-#   3. deploy          (Environment 'production' approval: SSH na on-prem XTuning)
+#   2. acr-push        (auto na main: build + push do Azure Container Registry)
 #
+# Deploy na on-premise XTuning se provádí ručně (viz docs/AZURE-ACR-SETUP.md).
 # GitLab repo (git.xtuning.cz/fieldforce/partner-bridge) je read-only mirror,
 # žádný runner. Detaily viz docs/GITHUB-CICD.md.
 name: CI/CD
@@ -16,7 +16,7 @@ on:
     branches: [main, develop]
 
 env:
-  DOCKER_IMAGE: registry.cendelin.eu/ff-partner-bridge
+  IMAGE_NAME: ff-partner-bridge
   # Solution používá .slnx formát — vyžaduje SDK 9.0.200+. TFM zůstává net8.0.
   DOTNET_VERSION: '9.0.x'
 
@@ -64,8 +64,8 @@ jobs:
           path: ${{ runner.temp }}/TestResults/**/*.trx
           if-no-files-found: warn
 
-  docker-push:
-    name: Docker Build + Push
+  acr-push:
+    name: Build + Push to Azure ACR
     runs-on: ubuntu-22.04
     needs: build-and-test
     # Spustit pouze na push do main — ne na PR ani develop
@@ -73,103 +73,76 @@ jobs:
 
     outputs:
       image-tag: ${{ steps.build.outputs.image-tag }}
+      acr-registry: ${{ steps.build.outputs.acr-registry }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Docker login
-        run: >
-          echo "${{ secrets.REGISTRY_PASSWORD }}"
-          | docker login registry.cendelin.eu
-            --username "${{ secrets.REGISTRY_USERNAME }}"
-            --password-stdin
+      # Service Principal login — vyžaduje GitHub Secret AZURE_CREDENTIALS s JSON:
+      # {
+      #   "clientId":       "<AZURE_CLIENT_ID>",
+      #   "clientSecret":   "<AZURE_CLIENT_SECRET>",
+      #   "tenantId":       "<AZURE_TENANT_ID>",
+      #   "subscriptionId": "<AZURE_SUBSCRIPTION_ID>"
+      # }
+      # Vygeneruj přes Azure Portal (návod: docs/AZURE-ACR-SETUP.md)
+      # nebo příkazem:
+      #   az ad sp create-for-rbac \
+      #     --name "ff-partner-bridge-ci" \
+      #     --role AcrPush \
+      #     --scopes "/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.ContainerRegistry/registries/<acr>" \
+      #     --sdk-auth
+      - name: Azure login (Service Principal)
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ACR login přes Azure CLI — využívá kontext z azure/login.
+      # ACR_NAME je samotný název registru bez .azurecr.io přípony (např. "acrxtuningprod").
+      - name: ACR login
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: |
+          if [[ ! "$ACR_NAME" =~ ^[a-zA-Z0-9]+$ ]]; then
+            echo "::error::ACR_NAME má neplatný formát (povoleno pouze [a-zA-Z0-9]): $ACR_NAME"
+            exit 1
+          fi
+          az acr login --name "$ACR_NAME"
 
       - name: Docker build
         id: build
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
         run: |
           # Používáme run_number (sekvenční) místo run_id (globální velké číslo)
           IMAGE_TAG="${{ github.run_number }}"
+          ACR_REGISTRY="${ACR_NAME}.azurecr.io"
+          IMAGE_REF="${ACR_REGISTRY}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
           docker build \
-            --tag "${{ env.DOCKER_IMAGE }}:${IMAGE_TAG}" \
+            --tag "${IMAGE_REF}" \
             --label "git-commit=${{ github.sha }}" \
             --label "build-id=${{ github.run_number }}" \
             .
+
           echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "acr-registry=${ACR_REGISTRY}" >> "$GITHUB_OUTPUT"
 
       - name: Docker push
-        run: docker push "${{ env.DOCKER_IMAGE }}:${{ steps.build.outputs.image-tag }}"
-
-  deploy:
-    name: Deploy on-premise (XTuning)
-    runs-on: ubuntu-22.04
-    needs: docker-push
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # GitHub Environment 'production' = required reviewers + audit log
-    environment: production
-
-    steps:
-      - name: Setup SSH
         run: |
-          mkdir -p ~/.ssh
-          # Zapisujeme klíč ze secrets — nikdy nelogovat obsah
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          # known_hosts ze secrets (výstup ssh-keyscan na deploy hostu)
-          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          docker push "${{ steps.build.outputs.acr-registry }}/${{ env.IMAGE_NAME }}:${{ steps.build.outputs.image-tag }}"
 
-      - name: SSH deploy
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          IMAGE_TAG: ${{ needs.docker-push.outputs.image-tag }}
+      - name: Image summary
         run: |
-          # Bezpečnostní validace: DEPLOY_HOST nesmí obsahovat speciální znaky
-          # Zabraňuje command injection v případě kompromitace secrets
-          if [[ ! "$DEPLOY_HOST" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-            echo "::error::DEPLOY_HOST obsahuje neplatné znaky: $DEPLOY_HOST"
-            exit 1
-          fi
+          {
+            echo "### Image pushed"
+            echo ""
+            echo "- Registry: \`${{ steps.build.outputs.acr-registry }}\`"
+            echo "- Image: \`${{ env.IMAGE_NAME }}\`"
+            echo "- Tag: \`${{ steps.build.outputs.image-tag }}\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          ssh \
-            -i ~/.ssh/deploy_key \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
-            -o StrictHostKeyChecking=yes \
-            "deploy@${DEPLOY_HOST}" \
-            "cd /opt/ff-partner-bridge \
-              && docker pull registry.cendelin.eu/ff-partner-bridge:${IMAGE_TAG} \
-              && IMAGE_TAG=${IMAGE_TAG} docker compose up -d --no-build ff-partner-bridge \
-              && echo 'Deploy dokoncen:' \$(date -u)"
-
-      - name: Health check
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          BRIDGE_HEALTH_URL: ${{ secrets.BRIDGE_HEALTH_URL }}
-        run: |
-          if [[ ! "$DEPLOY_HOST" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-            echo "::error::DEPLOY_HOST obsahuje neplatné znaky"
-            exit 1
-          fi
-
-          # Health check přes SSH — Bridge naslouchá pouze na interní síti XTuning
-          HEALTH_URL="${BRIDGE_HEALTH_URL:-http://localhost:8080/health}"
-          for i in $(seq 1 10); do
-            echo "Health check pokus $i/10..."
-            if ssh \
-                -i ~/.ssh/deploy_key \
-                -o UserKnownHostsFile=~/.ssh/known_hosts \
-                -o StrictHostKeyChecking=yes \
-                "deploy@${DEPLOY_HOST}" \
-                "curl --silent --fail '${HEALTH_URL}' | grep -q 'healthy'"; then
-              echo "Bridge je zdravý!"
-              exit 0
-            fi
-            sleep 5
-          done
-
-          echo "::error::Bridge health check selhal po 50 sekundách"
-          exit 1
-
-      # SSH klíč vždy smazat — i při selhání předchozích kroků
-      - name: Cleanup SSH keys
+      - name: Azure logout
         if: always()
-        run: rm -f ~/.ssh/deploy_key ~/.ssh/known_hosts
+        run: az logout || true
