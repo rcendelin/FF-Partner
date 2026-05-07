@@ -36,8 +36,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
-    private readonly ISyncLogRepository _syncLog;
-    private readonly SyncLogWriter _syncLogWriter;
+    private readonly IPartnerSyncLog _syncLog;
     private readonly IOwnerMappingService _ownerMapping;
     private readonly IBridgeMetrics _metrics;
     private readonly ILogger<OwnerChangedConsumer> _logger;
@@ -49,8 +48,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
         IServiceScopeFactory scopeFactory,
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
-        ISyncLogRepository syncLog,
-        SyncLogWriter syncLogWriter,
+        IPartnerSyncLog syncLog,
         IOwnerMappingService ownerMapping,
         IBridgeMetrics metrics,
         IConfiguration configuration,
@@ -61,7 +59,6 @@ public sealed class OwnerChangedConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
-        _syncLogWriter = syncLogWriter;
         _ownerMapping = ownerMapping;
         _metrics = metrics;
         _topicName = configuration["ServiceBus:OwnerChangedTopic"] ?? "ff.company.owner-changed";
@@ -169,7 +166,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeReceived", "Inbound", "OwnerChange", "InProgress", ct: ct);
 
         // 1. Lookup mapping — firma musí být v bridge_id_mapping
@@ -221,7 +218,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
             return;
         }
 
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeProcessed", "Inbound", "OwnerChange", "Success",
             partnerClientId: mapping.PartnerClientId, partnerRegion: mapping.PartnerRegion, ct: CancellationToken.None);
 
@@ -247,17 +244,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
                 message.FfCompanyId);
         }
 
-        // 5. Log úspěchu
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            PartnerClientId = mapping.PartnerClientId,
-            PartnerRegion = mapping.PartnerRegion,
-            Operation = "owner_change",
-            ServiceBusMessageId = sbMessageId,
-            Status = "success",
-            Severity = "Info"
-        }, CancellationToken.None);
+        // BridgeProcessed/Success výše už pokrývá audit — duplicate write smazán.
 
         _logger.LogInformation(
             "OWNER_CHANGE: FF CompanyId={CompanyId} → Partner ClientId={PartnerId}, region={Region}, OwnerId={OwnerId}",
@@ -270,7 +257,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
         string errorCode,
         string errorMsg)
     {
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeFailed", "Inbound", "OwnerChange", "Failed",
             errorCode: errorCode, errorMessage: errorMsg);
 
@@ -296,15 +283,7 @@ public sealed class OwnerChangedConsumer : BackgroundService
                 message.FfCompanyId);
         }
 
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            Operation = "owner_change",
-            ServiceBusMessageId = sbMessageId,
-            Status = "failed",
-            ErrorMessage = $"{errorCode}: {errorMsg}",
-            Severity = "Error"
-        }, CancellationToken.None);
+        // BridgeFailed/Failed výše už pokrývá audit — duplicate write smazán.
     }
 
     private Task HandleErrorAsync(ProcessErrorEventArgs args)

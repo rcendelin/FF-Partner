@@ -37,7 +37,6 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
     private readonly ConcurrentBag<Guid> _insertedMappings = [];
     private readonly ConcurrentBag<string> _insertedWatermarks = [];
     private readonly ConcurrentBag<long> _insertedSnapshotOrderIds = [];
-    private readonly ConcurrentBag<string> _insertedSyncLogOperations = [];
 
     // ── Connection strings (null = není k dispozici) ───────────────────────
 
@@ -111,14 +110,6 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
         return new OrderSnapshotRepository(AzureSqlConn);
     }
 
-    public BridgeSyncLogRepository CreateSyncLogRepository()
-    {
-        if (AzureSqlConn is null)
-            throw new InvalidOperationException("BRIDGE_IT_AZURE_SQL_CONN není nastavena.");
-
-        return new BridgeSyncLogRepository(AzureSqlConn);
-    }
-
     public OrderPollingRepository CreateOrderPollingRepository()
         => new OrderPollingRepository(CreatePartnerFactory());
 
@@ -150,13 +141,6 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
     /// </summary>
     public void TrackSnapshot(long orderId)
         => _insertedSnapshotOrderIds.Add(orderId);
-
-    /// <summary>
-    /// Zaregistruje operation name pro cleanup v bridge_sync_log.
-    /// Používat jen pro testovací operace s unikátním prefixem (např. "it_backfill_xxxx").
-    /// </summary>
-    public void TrackSyncLogOperation(string operation)
-        => _insertedSyncLogOperations.Add(operation);
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -281,27 +265,8 @@ public sealed class IntegrationTestFixture : IAsyncLifetime
                 }
             }
 
-            // Cleanup bridge_sync_log — pouze pro testovací operace (unikátní prefixované názvy)
-            if (!_insertedSyncLogOperations.IsEmpty)
-            {
-                var operations = _insertedSyncLogOperations.Distinct().ToArray();
-                try
-                {
-                    await using var conn = new SqlConnection(AzureSqlConn);
-                    await conn.OpenAsync();
-                    var placeholders = string.Join(",", operations.Select((_, i) => $"@op{i}"));
-                    var sql = $"DELETE FROM bridge_sync_log WHERE operation IN ({placeholders})";
-                    var param = new DynamicParameters();
-                    for (var i = 0; i < operations.Length; i++)
-                        param.Add($"op{i}", operations[i]);
-                    await conn.ExecuteAsync(sql, param);
-                }
-                catch (Exception ex)
-                {
-                    await Console.Error.WriteLineAsync(
-                        $"[IntegrationTestFixture] Cleanup bridge_sync_log selhal: {ex.Message}.");
-                }
-            }
+            // Cleanup bridge_sync_log odstraněn — viz PartnerSyncLog migrace,
+            // tabulka už není zapisována Bridge kódem.
         }
     }
 }

@@ -20,21 +20,25 @@ public class OrderPollerGaiaTests
 {
     // ── Stubs ──────────────────────────────────────────────────────────────────
 
-    private sealed class CapturingSyncLog : ISyncLogRepository
+    private sealed class CapturingSyncLog : IPartnerSyncLog
     {
-        public List<SyncLogEntry> Written { get; } = [];
+        public List<(string Phase, string Operation, string Status)> Written { get; } = [];
 
-        public Task WriteAsync(SyncLogEntry entry, CancellationToken ct = default)
+        public Task WriteAsync(
+            Guid companyId, string correlationMessageId, string phase, string direction,
+            string operation, string status, int? partnerClientId = null, string? partnerRegion = null,
+            string? errorCode = null, string? errorMessage = null, string? payloadJson = null,
+            CancellationToken ct = default)
         {
-            Written.Add(entry);
+            Written.Add((phase, operation, status));
             return Task.CompletedTask;
         }
 
-        public Task<IReadOnlyList<SyncLogEntry>> GetLastAsync(int count, CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+        public Task<IReadOnlyList<PartnerSyncLogEntry>> GetLastAsync(int count, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PartnerSyncLogEntry>>(Array.Empty<PartnerSyncLogEntry>());
 
-        public Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+        public Task<IReadOnlyList<PartnerSyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PartnerSyncLogEntry>>(Array.Empty<PartnerSyncLogEntry>());
 
         public Task<bool> HasOperationSucceededAsync(string operation, string region, CancellationToken ct = default)
             => Task.FromResult(false);
@@ -68,7 +72,7 @@ public class OrderPollerGaiaTests
             TblOrderRow order,
             string oldHash,
             IServiceBusPublisher publisher,
-            ISyncLogRepository syncLog)
+            IPartnerSyncLog syncLog)
             : base(
                 publisher: publisher,
                 watermarkRepo: new StubWatermarkRepo(),
@@ -288,22 +292,25 @@ public class OrderPollerGaiaTests
     }
 
     [Fact]
-    public void SyncLogEntry_GaiaOperation_HasCorrectFields()
+    public void PartnerSyncLogEntry_GaiaOperation_HasCorrectFields()
     {
         // Ověřit strukturu záznamu pro GAIA error (bez volání reálné DB)
-        var entry = new SyncLogEntry
+        var entry = new PartnerSyncLogEntry
         {
+            CompanyId = Guid.NewGuid(),
+            CorrelationMessageId = "gaia-error-cz-42",
+            Phase = "GaiaError",
+            Direction = "Internal",
             Operation = "gaia_processing_error",
-            Status = "warning",
+            Status = "Warning",
             PartnerRegion = "cz",
             PartnerClientId = 100,
-            Severity = "Warning",
             PayloadJson = "{\"orderId\":42,\"automatClose\":-1}"
         };
 
         Assert.Equal("gaia_processing_error", entry.Operation);
-        Assert.Equal("warning", entry.Status);
-        Assert.Equal("Warning", entry.Severity);
+        Assert.Equal("Warning", entry.Status);
+        Assert.Equal("GaiaError", entry.Phase);
         Assert.Contains("\"automatClose\":-1", entry.PayloadJson);
     }
 

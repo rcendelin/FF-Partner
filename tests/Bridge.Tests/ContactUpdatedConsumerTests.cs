@@ -18,7 +18,7 @@ public class ContactUpdatedConsumerTests
 {
     private readonly IBridgeMappingRepository _mappingRepo = Substitute.For<IBridgeMappingRepository>();
     private readonly IPartnerClientRepository _partnerRepo = Substitute.For<IPartnerClientRepository>();
-    private readonly ISyncLogRepository _syncLog = Substitute.For<ISyncLogRepository>();
+    private readonly IPartnerSyncLog _syncLog = Substitute.For<IPartnerSyncLog>();
     private readonly IServiceBusPublisher _publisher = Substitute.For<IServiceBusPublisher>();
 
     private static ContactUpdatedMessage MakeMessage(
@@ -87,12 +87,10 @@ public class ContactUpdatedConsumerTests
         await ExecuteContactUpdateAsync(msg);
 
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e =>
-                e.FfCompanyId == msg.FfCompanyId &&
-                e.PartnerClientId == 42 &&
-                e.PartnerRegion == "hu" &&
-                e.Operation == "contact_update" &&
-                e.Status == "success"),
+            msg.FfCompanyId, Arg.Any<string>(),
+            "BridgeProcessed", "Inbound", "ContactUpdate", "Success",
+            42, "hu",
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -140,9 +138,10 @@ public class ContactUpdatedConsumerTests
         await ExecuteContactUpdateAsync(msg);
 
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e =>
-                e.Operation == "contact_update" &&
-                e.Status == "failed"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            "BridgeFailed", "Inbound", "ContactUpdate", "Failed",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -167,7 +166,10 @@ public class ContactUpdatedConsumerTests
             Arg.Any<CancellationToken>());
 
         await _syncLog.DidNotReceive().WriteAsync(
-            Arg.Is<SyncLogEntry>(e => e.Status == "success"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "Success",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -206,7 +208,10 @@ public class ContactUpdatedConsumerTests
         await ExecuteContactUpdateAsync(msg);
 
         await _syncLog.Received(1).WriteAsync(
-            Arg.Is<SyncLogEntry>(e => e.Status == "success"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), "Success",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -233,15 +238,12 @@ public class ContactUpdatedConsumerTests
             };
             try { await _publisher.PublishAsync("bridge.company.sync-failed", failed, sbMessageId, CancellationToken.None); }
             catch { /* ignorovat */ }
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.FfCompanyId,
-                Operation = "contact_update",
-                ServiceBusMessageId = sbMessageId,
-                Status = "failed",
-                ErrorMessage = $"NO_MAPPING: Mapping pro CompanyId={message.FfCompanyId} neexistuje.",
-                Severity = "Error"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                message.FfCompanyId, sbMessageId,
+                "BridgeFailed", "Inbound", "ContactUpdate", "Failed",
+                errorCode: "NO_MAPPING",
+                errorMessage: $"NO_MAPPING: Mapping pro CompanyId={message.FfCompanyId} neexistuje.",
+                ct: CancellationToken.None);
             return;
         }
 
@@ -265,15 +267,12 @@ public class ContactUpdatedConsumerTests
             };
             try { await _publisher.PublishAsync("bridge.company.sync-failed", failed, sbMessageId, CancellationToken.None); }
             catch { /* ignorovat */ }
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.FfCompanyId,
-                Operation = "contact_update",
-                ServiceBusMessageId = sbMessageId,
-                Status = "failed",
-                ErrorMessage = $"CLIENT_NOT_FOUND: Klient id={mapping.PartnerClientId} nenalezen.",
-                Severity = "Error"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                message.FfCompanyId, sbMessageId,
+                "BridgeFailed", "Inbound", "ContactUpdate", "Failed",
+                errorCode: "CLIENT_NOT_FOUND",
+                errorMessage: $"CLIENT_NOT_FOUND: Klient id={mapping.PartnerClientId} nenalezen.",
+                ct: CancellationToken.None);
             return;
         }
 
@@ -293,15 +292,10 @@ public class ContactUpdatedConsumerTests
         catch { /* data konzistentní i při publish chybě */ }
 
         // 4. Log úspěchu
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            PartnerClientId = mapping.PartnerClientId,
-            PartnerRegion = mapping.PartnerRegion,
-            Operation = "contact_update",
-            ServiceBusMessageId = sbMessageId,
-            Status = "success",
-            Severity = "Info"
-        }, CancellationToken.None);
+        await _syncLog.WriteAsync(
+            message.FfCompanyId, sbMessageId,
+            "BridgeProcessed", "Inbound", "ContactUpdate", "Success",
+            mapping.PartnerClientId, mapping.PartnerRegion,
+            ct: CancellationToken.None);
     }
 }

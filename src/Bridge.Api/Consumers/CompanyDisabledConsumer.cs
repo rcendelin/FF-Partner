@@ -35,8 +35,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
-    private readonly ISyncLogRepository _syncLog;
-    private readonly SyncLogWriter _syncLogWriter;
+    private readonly IPartnerSyncLog _syncLog;
     private readonly IBridgeMetrics _metrics;
     private readonly ILogger<CompanyDisabledConsumer> _logger;
     private readonly string _topicName;
@@ -47,8 +46,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         IServiceScopeFactory scopeFactory,
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
-        ISyncLogRepository syncLog,
-        SyncLogWriter syncLogWriter,
+        IPartnerSyncLog syncLog,
         IBridgeMetrics metrics,
         IConfiguration configuration,
         ILogger<CompanyDisabledConsumer> logger)
@@ -58,7 +56,6 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
-        _syncLogWriter = syncLogWriter;
         _metrics = metrics;
         _topicName = configuration["ServiceBus:CompanyDisabledTopic"] ?? "ff.company.disabled";
         _subscriptionName = configuration["ServiceBus:SubscriptionName"] ?? "bridge-main";
@@ -169,7 +166,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeReceived", "Inbound", "Disable", "InProgress", ct: ct);
 
         // 1. Lookup mapping — firma musí být v bridge_id_mapping
@@ -212,7 +209,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
             return;
         }
 
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeProcessed", "Inbound", "Disable", "Success",
             partnerClientId: mapping.PartnerClientId, partnerRegion: mapping.PartnerRegion, ct: CancellationToken.None);
 
@@ -239,17 +236,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
                 message.FfCompanyId);
         }
 
-        // 4. Log úspěchu
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            PartnerClientId = mapping.PartnerClientId,
-            PartnerRegion = mapping.PartnerRegion,
-            Operation = "disable",
-            ServiceBusMessageId = sbMessageId,
-            Status = "success",
-            Severity = "Info"
-        }, CancellationToken.None);
+        // BridgeProcessed/Success výše už pokrývá audit — duplicate write smazán.
 
         _logger.LogInformation(
             "DISABLE: FF CompanyId={CompanyId} → Partner ClientId={PartnerId}, region={Region}",
@@ -262,7 +249,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
         string errorCode,
         string errorMsg)
     {
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeFailed", "Inbound", "Disable", "Failed",
             errorCode: errorCode, errorMessage: errorMsg);
 
@@ -288,15 +275,7 @@ public sealed class CompanyDisabledConsumer : BackgroundService
                 message.FfCompanyId);
         }
 
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            Operation = "disable",
-            ServiceBusMessageId = sbMessageId,
-            Status = "failed",
-            ErrorMessage = $"{errorCode}: {errorMsg}",
-            Severity = "Error"
-        }, CancellationToken.None);
+        // BridgeFailed/Failed výše už pokrývá audit — duplicate write smazán.
     }
 
     private Task HandleErrorAsync(ProcessErrorEventArgs args)

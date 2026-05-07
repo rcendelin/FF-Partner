@@ -38,11 +38,9 @@ public static class DependencyInjection
             return new BridgeMappingRepository(azureSqlConnectionString, cache);
         });
 
-        services.AddSingleton<ISyncLogRepository>(
-            _ => new BridgeSyncLogRepository(azureSqlConnectionString));
-
-        // PartnerSyncLog writer — writes directly to FieldForce's Azure SQL
-        services.AddSingleton<SyncLogWriter>();
+        // PartnerSyncLog — sjednocený zápis i čtení do FieldForce Azure SQL.
+        // Connection string se čte z konfigurace (klíč "FieldForceDb").
+        services.AddSingleton<IPartnerSyncLog, PartnerSyncLogRepository>();
 
         // GAIA číselníky (read-only)
         services.AddSingleton<IGaiaDbConnectionFactory>(

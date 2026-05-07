@@ -21,7 +21,7 @@ public sealed class OrderPollerCz : OrderPollerBase
         IOrderSnapshotRepository snapshotRepo,
         IBridgeMappingRepository mappingRepo,
         IOrderPollingRepository orderPolling,
-        ISyncLogRepository syncLog,
+        IPartnerSyncLog syncLog,
         IBridgeMetrics metrics,
         IPartnerDbConnectionFactory partnerDbFactory,
         ILogger<OrderPollerCz> logger)

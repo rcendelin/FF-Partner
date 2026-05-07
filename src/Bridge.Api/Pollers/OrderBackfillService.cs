@@ -23,14 +23,14 @@ public sealed class OrderBackfillService : BackgroundService
 
     private readonly IOrderPollingRepository _orderPolling;
     private readonly IBridgeMappingRepository _mappingRepo;
-    private readonly ISyncLogRepository _syncLog;
+    private readonly IPartnerSyncLog _syncLog;
     private readonly IServiceBusPublisher _publisher;
     private readonly ILogger<OrderBackfillService> _logger;
 
     public OrderBackfillService(
         IOrderPollingRepository orderPolling,
         IBridgeMappingRepository mappingRepo,
-        ISyncLogRepository syncLog,
+        IPartnerSyncLog syncLog,
         IServiceBusPublisher publisher,
         ILogger<OrderBackfillService> logger)
     {
@@ -160,14 +160,16 @@ public sealed class OrderBackfillService : BackgroundService
             }
 
             // Zapsat úspěšné dokončení backfillu pro region (idempotence key)
-            await _syncLog.WriteAsync(new Application.Interfaces.SyncLogEntry
-            {
-                Operation = "order_backfill",
-                Status = "success",
-                PartnerRegion = region,
-                Severity = "Info",
-                PayloadJson = $"{{\"total\":{orders.Count},\"published\":{published},\"cutoffUnix\":{cutoffUnix}}}"
-            }, CancellationToken.None);
+            await _syncLog.WriteAsync(
+                companyId: Guid.Empty,
+                correlationMessageId: $"backfill-{region}-{cutoffUnix}",
+                phase: "BackfillCompleted",
+                direction: "Internal",
+                operation: "order_backfill",
+                status: "Success",
+                partnerRegion: region,
+                payloadJson: $"{{\"total\":{orders.Count},\"published\":{published},\"cutoffUnix\":{cutoffUnix}}}",
+                ct: CancellationToken.None);
 
             _logger.LogInformation(
                 "OrderBackfillService [{Region}]: dokončeno, publikováno={Published}/{Total}",

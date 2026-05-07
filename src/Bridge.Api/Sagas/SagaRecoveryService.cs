@@ -37,7 +37,7 @@ public sealed class SagaRecoveryService : IHostedService
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var syncLog = scope.ServiceProvider.GetRequiredService<ISyncLogRepository>();
+            var syncLog = scope.ServiceProvider.GetRequiredService<IPartnerSyncLog>();
             var saga = scope.ServiceProvider.GetRequiredService<MoveClientToRegionSaga>();
 
             var pendingSagas = await syncLog.GetPendingSagasAsync(linkedCt);
@@ -66,7 +66,7 @@ public sealed class SagaRecoveryService : IHostedService
                     // Chyba v recovery jedné ságy nesmí zastavit recovery ostatních
                     _logger.LogError(ex,
                         "SagaRecovery: recovery selhala pro CompanyId={CompanyId} (created_at={CreatedAt})",
-                        pendingSaga.FfCompanyId, pendingSaga.CreatedAt);
+                        pendingSaga.CompanyId, pendingSaga.CreatedAt);
                 }
             }
 

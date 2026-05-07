@@ -36,7 +36,7 @@ public abstract class OrderPollerBase : BackgroundService
     protected readonly IOrderSnapshotRepository SnapshotRepo;
     protected readonly IBridgeMappingRepository MappingRepo;
     protected readonly IOrderPollingRepository OrderPolling;
-    protected readonly ISyncLogRepository SyncLog;
+    protected readonly IPartnerSyncLog SyncLog;
     protected readonly IBridgeMetrics Metrics;
     protected readonly ILogger Logger;
     protected readonly IPartnerDbConnectionFactory PartnerDbFactory;
@@ -53,7 +53,7 @@ public abstract class OrderPollerBase : BackgroundService
         IOrderSnapshotRepository snapshotRepo,
         IBridgeMappingRepository mappingRepo,
         IOrderPollingRepository orderPolling,
-        ISyncLogRepository syncLog,
+        IPartnerSyncLog syncLog,
         IBridgeMetrics metrics,
         IPartnerDbConnectionFactory partnerDbFactory,
         ILogger logger)
@@ -230,14 +230,16 @@ public abstract class OrderPollerBase : BackgroundService
                 "OrderPoller {Region}: nové={New}, změny stavů={Changes}, klientů={Clients}",
                 Region, newOrderCount, stateChangeCount, clientIds.Count);
 
-            await SyncLog.WriteAsync(new Application.Interfaces.SyncLogEntry
-            {
-                Operation = "order_poll",
-                Status = "success",
-                PartnerRegion = Region,
-                Severity = "Info",
-                PayloadJson = $"{{\"new\":{newOrderCount},\"stateChanges\":{stateChangeCount}}}"
-            }, CancellationToken.None);
+            await SyncLog.WriteAsync(
+                companyId: Guid.Empty,
+                correlationMessageId: $"poll-{Region}-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}",
+                phase: "PollCompleted",
+                direction: "Internal",
+                operation: "order_poll",
+                status: "Success",
+                partnerRegion: Region,
+                payloadJson: $"{{\"new\":{newOrderCount},\"stateChanges\":{stateChangeCount}}}",
+                ct: CancellationToken.None);
         }
     }
 
@@ -296,15 +298,17 @@ public abstract class OrderPollerBase : BackgroundService
 
             try
             {
-                await SyncLog.WriteAsync(new Application.Interfaces.SyncLogEntry
-                {
-                    Operation = "gaia_processing_error",
-                    Status = "warning",
-                    PartnerRegion = Region,
-                    PartnerClientId = order.IdClient,
-                    Severity = "Warning",
-                    PayloadJson = $"{{\"orderId\":{order.IdOrder},\"automatClose\":{order.OrderAutomatClose}}}"
-                }, CancellationToken.None);
+                await SyncLog.WriteAsync(
+                    companyId: mapping.FfCompanyId,
+                    correlationMessageId: $"gaia-error-{Region}-{order.IdOrder}",
+                    phase: "GaiaError",
+                    direction: "Internal",
+                    operation: "gaia_processing_error",
+                    status: "Warning",
+                    partnerClientId: order.IdClient,
+                    partnerRegion: Region,
+                    payloadJson: $"{{\"orderId\":{order.IdOrder},\"automatClose\":{order.OrderAutomatClose}}}",
+                    ct: CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -368,15 +372,17 @@ public abstract class OrderPollerBase : BackgroundService
 
             try
             {
-                await SyncLog.WriteAsync(new Application.Interfaces.SyncLogEntry
-                {
-                    Operation = "gaia_processing_error",
-                    Status = "warning",
-                    PartnerRegion = Region,
-                    PartnerClientId = order.IdClient,
-                    Severity = "Warning",
-                    PayloadJson = $"{{\"orderId\":{order.IdOrder},\"automatClose\":{order.OrderAutomatClose}}}"
-                }, CancellationToken.None);
+                await SyncLog.WriteAsync(
+                    companyId: mapping.FfCompanyId,
+                    correlationMessageId: $"gaia-error-{Region}-{order.IdOrder}",
+                    phase: "GaiaError",
+                    direction: "Internal",
+                    operation: "gaia_processing_error",
+                    status: "Warning",
+                    partnerClientId: order.IdClient,
+                    partnerRegion: Region,
+                    payloadJson: $"{{\"orderId\":{order.IdOrder},\"automatClose\":{order.OrderAutomatClose}}}",
+                    ct: CancellationToken.None);
             }
             catch (Exception ex)
             {

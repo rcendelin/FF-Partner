@@ -34,8 +34,7 @@ public sealed class ContactUpdatedConsumer : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IServiceBusPublisher _publisher;
     private readonly IBridgeMappingRepository _mappingRepo;
-    private readonly ISyncLogRepository _syncLog;
-    private readonly SyncLogWriter _syncLogWriter;
+    private readonly IPartnerSyncLog _syncLog;
     private readonly IBridgeMetrics _metrics;
     private readonly ILogger<ContactUpdatedConsumer> _logger;
     private readonly string _topicName;
@@ -46,8 +45,7 @@ public sealed class ContactUpdatedConsumer : BackgroundService
         IServiceScopeFactory scopeFactory,
         IServiceBusPublisher publisher,
         IBridgeMappingRepository mappingRepo,
-        ISyncLogRepository syncLog,
-        SyncLogWriter syncLogWriter,
+        IPartnerSyncLog syncLog,
         IBridgeMetrics metrics,
         IConfiguration configuration,
         ILogger<ContactUpdatedConsumer> logger)
@@ -57,7 +55,6 @@ public sealed class ContactUpdatedConsumer : BackgroundService
         _publisher = publisher;
         _mappingRepo = mappingRepo;
         _syncLog = syncLog;
-        _syncLogWriter = syncLogWriter;
         _metrics = metrics;
         _topicName = configuration["ServiceBus:ContactUpdatedTopic"] ?? "ff.contact.updated";
         _subscriptionName = configuration["ServiceBus:SubscriptionName"] ?? "bridge-main";
@@ -164,7 +161,7 @@ public sealed class ContactUpdatedConsumer : BackgroundService
         string sbMessageId,
         CancellationToken ct)
     {
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeReceived", "Inbound", "ContactUpdate", "InProgress", ct: ct);
 
         // 1. Lookup mapping — firma musí být v bridge_id_mapping
@@ -204,7 +201,7 @@ public sealed class ContactUpdatedConsumer : BackgroundService
             return;
         }
 
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeProcessed", "Inbound", "ContactUpdate", "Success",
             partnerClientId: mapping.PartnerClientId, partnerRegion: mapping.PartnerRegion, ct: CancellationToken.None);
 
@@ -230,17 +227,7 @@ public sealed class ContactUpdatedConsumer : BackgroundService
                 message.FfCompanyId);
         }
 
-        // 4. Log úspěchu
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            PartnerClientId = mapping.PartnerClientId,
-            PartnerRegion = mapping.PartnerRegion,
-            Operation = "contact_update",
-            ServiceBusMessageId = sbMessageId,
-            Status = "success",
-            Severity = "Info"
-        }, CancellationToken.None);
+        // BridgeProcessed/Success výše (~řádek 207) už pokrývá audit — duplicate write smazán.
 
         _logger.LogInformation(
             "CONTACT_UPDATE: FF CompanyId={CompanyId} → Partner ClientId={PartnerId}, region={Region}",
@@ -253,7 +240,7 @@ public sealed class ContactUpdatedConsumer : BackgroundService
         string errorCode,
         string errorMsg)
     {
-        await _syncLogWriter.WriteAsync(message.FfCompanyId, message.MessageId,
+        await _syncLog.WriteAsync(message.FfCompanyId, message.MessageId,
             "BridgeFailed", "Inbound", "ContactUpdate", "Failed",
             errorCode: errorCode, errorMessage: errorMsg);
 
@@ -279,15 +266,7 @@ public sealed class ContactUpdatedConsumer : BackgroundService
                 message.FfCompanyId);
         }
 
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.FfCompanyId,
-            Operation = "contact_update",
-            ServiceBusMessageId = sbMessageId,
-            Status = "failed",
-            ErrorMessage = $"{errorCode}: {errorMsg}",
-            Severity = "Error"
-        }, CancellationToken.None);
+        // BridgeFailed/Failed výše už pokrývá audit — duplicate write smazán.
     }
 
     private Task HandleErrorAsync(ProcessErrorEventArgs args)

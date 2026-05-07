@@ -26,7 +26,7 @@ public sealed class GeoValidationService : IGeoValidationService
     private readonly IGaiaZipRepository _zipRepo;
     private readonly IGaiaStateRepository _stateRepo;
     private readonly IGaiaCountyRepository _countyRepo;
-    private readonly ISyncLogRepository _syncLog;
+    private readonly IPartnerSyncLog _syncLog;
     private readonly ILogger<GeoValidationService> _logger;
 
     public GeoValidationService(
@@ -34,7 +34,7 @@ public sealed class GeoValidationService : IGeoValidationService
         IGaiaZipRepository zipRepo,
         IGaiaStateRepository stateRepo,
         IGaiaCountyRepository countyRepo,
-        ISyncLogRepository syncLog,
+        IPartnerSyncLog syncLog,
         ILogger<GeoValidationService> logger)
     {
         _countryRepo = countryRepo;
@@ -64,18 +64,20 @@ public sealed class GeoValidationService : IGeoValidationService
                 "Neznámé PSČ {PostalCode} pro {Country} — zip_id bude NULL. Sync pokračuje.",
                 address.PostalCode, address.CountryCode);
 
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                Operation = "geo_validation_warning",
-                Status = "warning",
-                Severity = "Warning",
-                PayloadJson = System.Text.Json.JsonSerializer.Serialize(new
+            await _syncLog.WriteAsync(
+                companyId: Guid.Empty,
+                correlationMessageId: $"geo-{address.CountryCode}-{address.PostalCode}",
+                phase: "Validation",
+                direction: "Internal",
+                operation: "geo_validation",
+                status: "Warning",
+                payloadJson: System.Text.Json.JsonSerializer.Serialize(new
                 {
                     postalCode = address.PostalCode,
                     countryCode = address.CountryCode,
                     city = address.City
-                })
-            }, ct);
+                }),
+                ct: ct);
         }
 
         // 3. Fuzzy lookup kraj — při nenalezení vrátit null (ne výjimka)

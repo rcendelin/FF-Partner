@@ -21,7 +21,7 @@ public sealed class OrderPollerPl : OrderPollerBase
         IOrderSnapshotRepository snapshotRepo,
         IBridgeMappingRepository mappingRepo,
         IOrderPollingRepository orderPolling,
-        ISyncLogRepository syncLog,
+        IPartnerSyncLog syncLog,
         IBridgeMetrics metrics,
         IPartnerDbConnectionFactory partnerDbFactory,
         ILogger<OrderPollerPl> logger)

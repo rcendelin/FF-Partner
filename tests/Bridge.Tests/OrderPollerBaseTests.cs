@@ -112,15 +112,19 @@ public class OrderPollerBaseTests
             => Task.FromResult<Bridge.Domain.Models.IdMappingRecord?>(null);
     }
 
-    private sealed class NoOpSyncLog : ISyncLogRepository
+    private sealed class NoOpSyncLog : IPartnerSyncLog
     {
-        public Task WriteAsync(SyncLogEntry entry, CancellationToken ct = default) => Task.CompletedTask;
+        public Task WriteAsync(
+            Guid companyId, string correlationMessageId, string phase, string direction,
+            string operation, string status, int? partnerClientId = null, string? partnerRegion = null,
+            string? errorCode = null, string? errorMessage = null, string? payloadJson = null,
+            CancellationToken ct = default) => Task.CompletedTask;
 
-        public Task<IReadOnlyList<SyncLogEntry>> GetLastAsync(int count, CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+        public Task<IReadOnlyList<PartnerSyncLogEntry>> GetLastAsync(int count, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PartnerSyncLogEntry>>(Array.Empty<PartnerSyncLogEntry>());
 
-        public Task<IReadOnlyList<SyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
-            => Task.FromResult<IReadOnlyList<SyncLogEntry>>(Array.Empty<SyncLogEntry>());
+        public Task<IReadOnlyList<PartnerSyncLogEntry>> GetPendingSagasAsync(CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<PartnerSyncLogEntry>>(Array.Empty<PartnerSyncLogEntry>());
 
         public Task<bool> HasOperationSucceededAsync(string operation, string region, CancellationToken ct = default)
             => Task.FromResult(false);

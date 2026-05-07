@@ -24,7 +24,7 @@ public class CompanySyncUpdateTests
     private readonly IGaiaZipRepository _zipRepo = Substitute.For<IGaiaZipRepository>();
     private readonly IGaiaStateRepository _stateRepo = Substitute.For<IGaiaStateRepository>();
     private readonly IGaiaCountyRepository _countyRepo = Substitute.For<IGaiaCountyRepository>();
-    private readonly ISyncLogRepository _syncLog = Substitute.For<ISyncLogRepository>();
+    private readonly IPartnerSyncLog _syncLog = Substitute.For<IPartnerSyncLog>();
     private readonly IPartnerClientRepository _partnerRepo = Substitute.For<IPartnerClientRepository>();
     private readonly IBridgeMappingRepository _mappingRepo = Substitute.For<IBridgeMappingRepository>();
     private readonly IServiceBusPublisher _publisher = Substitute.For<IServiceBusPublisher>();
@@ -147,8 +147,10 @@ public class CompanySyncUpdateTests
             Arg.Any<string?>(), Arg.Any<CancellationToken>());
         // Sync log se zápisem conflict
         await _syncLog.Received().WriteAsync(
-            Arg.Is<SyncLogEntry>(e =>
-                e.Operation == "update" && e.Status == "conflict"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            "BridgeProcessed", "Inbound", "Update", "Conflict",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -204,8 +206,10 @@ public class CompanySyncUpdateTests
             Arg.Any<string?>(), Arg.Any<CancellationToken>());
 
         await _syncLog.Received().WriteAsync(
-            Arg.Is<SyncLogEntry>(e =>
-                e.Operation == "update" && e.Status == "success"),
+            Arg.Any<Guid>(), Arg.Any<string>(),
+            "BridgeProcessed", "Inbound", "Update", "Success",
+            Arg.Any<int?>(), Arg.Any<string?>(),
+            Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -350,16 +354,11 @@ public class CompanySyncUpdateTests
                 IncomingMessageSentAt = message.SentAt
             }, message.MessageId, ct);
 
-            await _syncLog.WriteAsync(new SyncLogEntry
-            {
-                FfCompanyId = message.CompanyId,
-                PartnerClientId = mapping.PartnerClientId,
-                PartnerRegion = region,
-                Operation = "update",
-                ServiceBusMessageId = message.MessageId,
-                Status = "conflict",
-                Severity = "Warning"
-            }, ct);
+            await _syncLog.WriteAsync(
+                message.CompanyId, message.MessageId,
+                "BridgeProcessed", "Inbound", "Update", "Conflict",
+                mapping.PartnerClientId, region,
+                ct: ct);
             return;
         }
 
@@ -430,16 +429,11 @@ public class CompanySyncUpdateTests
             Action = "Update"
         }, message.MessageId, ct);
 
-        await _syncLog.WriteAsync(new SyncLogEntry
-        {
-            FfCompanyId = message.CompanyId,
-            PartnerClientId = mapping.PartnerClientId,
-            PartnerRegion = region,
-            Operation = "update",
-            ServiceBusMessageId = message.MessageId,
-            Status = "success",
-            Severity = "Info"
-        }, ct);
+        await _syncLog.WriteAsync(
+            message.CompanyId, message.MessageId,
+            "BridgeProcessed", "Inbound", "Update", "Success",
+            mapping.PartnerClientId, region,
+            ct: ct);
     }
 
     private async Task PublishSyncFailedAsync(
