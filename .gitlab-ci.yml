@@ -16,7 +16,8 @@ stages:
 
 variables:
   DOCKER_IMAGE: registry.cendelin.eu/ff-partner-bridge
-  DOTNET_VERSION: "8.0"
+  # Solution používá .slnx formát — vyžaduje SDK 9.0.200+. TFM zůstává net8.0.
+  DOTNET_VERSION: "9.0"
   DOCKER_DRIVER: overlay2
   DOCKER_TLS_CERTDIR: "/certs"
   # NuGet balíčky v rámci projektu — sdíleny přes cache
@@ -26,7 +27,7 @@ variables:
 
 build-and-test:
   stage: build
-  image: mcr.microsoft.com/dotnet/sdk:8.0
+  image: mcr.microsoft.com/dotnet/sdk:9.0
   cache:
     key:
       files:

@@ -8,7 +8,8 @@ on:
 
 env:
   DOCKER_IMAGE: registry.cendelin.eu/ff-partner-bridge
-  DOTNET_VERSION: '8.0.x'
+  # Solution používá .slnx formát — vyžaduje SDK 9.0.200+. TFM zůstává net8.0.
+  DOTNET_VERSION: '9.0.x'
 
 jobs:
   build-and-test:

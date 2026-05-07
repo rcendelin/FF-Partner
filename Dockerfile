@@ -12,7 +12,9 @@ RUN addgroup --system --gid 1001 bridge && \
     adduser --system --uid 1001 --ingroup bridge bridge
 USER bridge
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+# SDK 9.x je nutný kvůli .slnx formátu i global.json. Runtime image (aspnet:8.0)
+# zůstává — TFM projektu je net8.0.
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
