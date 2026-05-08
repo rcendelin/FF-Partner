@@ -86,10 +86,13 @@ echo "..." > secrets/azure_sql_conn.txt
 # ... opakovat pro: gaia, partner_cz/pl/hu/us, servicebus, bridge_admin_api_key
 chmod 600 secrets/*.txt
 
-# 2. (volitelné) .env pro non-secret hodnoty (App Insights conn, IMAGE_TAG, OwnerMapping)
+# 2. (volitelné) .env pro non-secret hodnoty (App Insights conn, IMAGE_TAG, OwnerMapping, BIND_IP)
+#    BIND_IP zjistíš:  ip -br addr show | awk '$3 ~ /^172\.24/ {print $3}'  (např. 172.24.0.66/24)
+#    Bez BIND_IP se použije 127.0.0.1 (jen localhost) — stačí pro reverse proxy / lokální test.
 cat > .env <<'EOF'
 ACR_NAME=acrxtuningprod
 IMAGE_TAG=11
+BIND_IP=172.24.0.66
 ApplicationInsights__ConnectionString=InstrumentationKey=...;IngestionEndpoint=https://...
 EOF
 chmod 600 .env

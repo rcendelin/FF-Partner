@@ -15,8 +15,10 @@ services:
       # Prázdná hodnota = telemetrie vypnutá (Bridge použije NullBridgeMetrics).
       - ApplicationInsights__ConnectionString=${ApplicationInsights__ConnectionString:-}
     ports:
-      # Pouze interní síť XTuning — ne 0.0.0.0
-      - "172.24.0.1:8080:8080"
+      # Bind IP je parametrizovaná přes ./.env — typicky host IP v XTuning subnetu
+      # (např. BIND_IP=172.24.0.66). Default 127.0.0.1 = pouze localhost; nikdy 0.0.0.0
+      # (CLAUDE.md sek. 17). Host IP zjistíš: ip -br addr show | awk '$3 ~ /^172\.24/ {print $3}'.
+      - "${BIND_IP:-127.0.0.1}:8080:8080"
     secrets:
       - azure_sql_conn
       - gaia_conn
