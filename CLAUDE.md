@@ -611,7 +611,7 @@ Síť XTuning má odchozí HTTPS → Application Insights funguje přes internet
 ❌ Notifikovat obchodníka o GAIA processing chybách
 ❌ Synchronizovat tbl_client_branch v Fázi 1
 ❌ Přistupovat na Service Bus topics mimo ff.* a bridge.* prefix
-❌ Spouštět Bridge na 0.0.0.0 (pouze interní IP sítě XTuning)
+❌ Spouštět Bridge na 0.0.0.0 (pouze interní IP sítě XTuning přes BIND_IP v ./.env, default 127.0.0.1)
 ❌ Swagger v PROD prostředí
 ❌ Psát do tbl_order — pouze číst (polling)
 ```
