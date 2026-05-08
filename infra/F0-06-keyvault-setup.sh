@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
-# F0-06 — Nasazení Azure Key Vault a Managed Identity pro FF-Partner Bridge
 #
-# Co skript dělá:
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  DEPRECATED — Bridge nekonzumuje Azure Key Vault.                           │
+# │                                                                             │
+# │  Aktuální deployment model je Docker Secrets + env vars (./.env), kód       │
+# │  v Program.cs nezavádí AddAzureKeyVault. Spuštění tohoto skriptu vytvoří    │
+# │  Azure resources, které nejsou nikým konzumovány — fakturace bez přínosu.   │
+# │                                                                             │
+# │  Skript je ponechán pouze pro případnou budoucí reaktivaci (viz             │
+# │  F0-06-keyvault.bicep header). Pro aktuální setup secrets viz               │
+# │  infra/F0-06-docker-secrets-init.sh a CLAUDE.md sekce 13.                   │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# F0-06 — Nasazení Azure Key Vault a Managed Identity pro FF-Partner Bridge (LEGACY)
+#
+# Co skript dělal:
 #   1. Ověří prerequisity (az CLI, přihlášení)
 #   2. Nasadí Bicep šablonu (Key Vault + Managed Identity + RBAC)
 #   3. Uloží Application Insights connection string do Key Vault

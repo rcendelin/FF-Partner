@@ -84,11 +84,20 @@ S plnou infrastrukturou nastavte connection stringy přes user secrets nebo
 mkdir -p secrets
 echo "..." > secrets/azure_sql_conn.txt
 # ... opakovat pro: gaia, partner_cz/pl/hu/us, servicebus, bridge_admin_api_key
+chmod 600 secrets/*.txt
 
-# 2. Build a spuštění
+# 2. (volitelné) .env pro non-secret hodnoty (App Insights conn, IMAGE_TAG, OwnerMapping)
+cat > .env <<'EOF'
+ACR_NAME=acrxtuningprod
+IMAGE_TAG=11
+ApplicationInsights__ConnectionString=InstrumentationKey=...;IngestionEndpoint=https://...
+EOF
+chmod 600 .env
+
+# 3. Build a spuštění
 docker compose up -d --build
 
-# 3. Healthcheck
+# 4. Healthcheck
 curl http://localhost:8080/health
 # → {"status":"healthy",...}
 ```
@@ -121,22 +130,46 @@ Bez `BRIDGE_IT_*` proměnných se integrační testy **automaticky přeskočí**
 
 ## Konfigurace v produkci
 
-Connection stringy a API klíč se v produkci čtou z **Docker Secrets**
-(`/run/secrets/<name>`). Načítání zajišťuje [`DockerSecretsReader`](src/Bridge.Api/SecretReaders/DockerSecretsReader.cs)
+Bridge načítá citlivé hodnoty výhradně z **Docker Secrets** (`/run/secrets/<name>`).
+Načítání zajišťuje [`DockerSecretsReader`](src/Bridge.Api/SecretReaders/DockerSecretsReader.cs)
 s fallbackem na `appsettings.json` pro DEV.
 
-| Secret | Účel |
-|---|---|
-| `azure_sql_conn` | Bridge mapping DB (Azure SQL) |
-| `gaia_conn` | GAIA MySQL — adresní číselníky (read-only) |
-| `partner_cz_conn` … `partner_us_conn` | Partner3 SQL Server per region |
-| `servicebus_conn` | Azure Service Bus namespace (sdílený s FieldForce) |
-| `bridge_admin_api_key` | API klíč pro `/api/*` endpointy (X-Api-Key header) |
+| Secret | Účel | Citlivost |
+|---|---|---|
+| `azure_sql_conn` | Bridge mapping DB (Azure SQL) | Vysoká |
+| `gaia_conn` | GAIA MySQL — adresní číselníky (read-only) | Vysoká |
+| `partner_cz_conn` … `partner_us_conn` | Partner3 MySQL per region | Vysoká |
+| `servicebus_conn` | Azure Service Bus namespace (sdílený s FieldForce) | Vysoká |
+| `bridge_admin_api_key` | API klíč pro `/api/*` endpointy (X-Api-Key header) | Vysoká |
 
 Bez `bridge_admin_api_key` se v produkci Bridge **odmítne spustit** (DEV pouští s warningem).
 
-Detailní setup viz [`infra/F0-06-keyvault-setup.sh`](infra/F0-06-keyvault-setup.sh)
-a [`infra/F0-06-docker-secrets-init.sh`](infra/F0-06-docker-secrets-init.sh).
+### Application Insights connection string
+
+Low-sensitivity write-only telemetrický endpoint — Microsoft sám doporučuje embed
+do client-side JS pro browser telemetrii. Předává se jako **env var** z `./.env`
+(mode 600), `docker-compose.yml` ji prostupuje do kontejneru:
+
+```ini
+# /opt/ff-partner-bridge/.env
+ApplicationInsights__ConnectionString=InstrumentationKey=...;IngestionEndpoint=https://...
+```
+
+Prázdná hodnota = telemetrie vypnutá (`NullBridgeMetrics`).
+
+### Azure Key Vault
+
+**Není konzumován.** Bicep šablona
+([`infra/F0-06-keyvault.bicep`](infra/F0-06-keyvault.bicep)) a setup skript
+([`infra/F0-06-keyvault-setup.sh`](infra/F0-06-keyvault-setup.sh)) jsou ponechány
+jako deprecated stuby pro případnou budoucí reaktivaci (např. migrace Bridge do
+Azure Container Apps). Nespouštět bez současné úpravy `Program.cs`.
+
+### Setup
+
+Detailní setup viz [`infra/F0-06-docker-secrets-init.sh`](infra/F0-06-docker-secrets-init.sh)
+(interaktivní vytvoření 8 secret souborů s mode 600, validace, automatické
+generování API klíče).
 
 ---
 

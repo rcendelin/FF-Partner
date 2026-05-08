@@ -499,27 +499,49 @@ Každý region má vlastní `BackgroundService` běžící každých 5 minut. Se
 
 ## 13. Secrets management
 
+Aktuální deployment model je **čistě Docker Secrets + env vars**. Azure Key Vault
+v kódu **není konzumován** — bicep šablona a setup skript jsou ponechány jako
+deprecated, kdyby bylo v budoucnu důvod KV reaktivovat (např. migrace Bridge do
+Azure Container Apps, kde by system-assigned MI fungovala bez bootstrap secretu).
+
 ```yaml
 # docker-compose.yml
 services:
   ff-partner-bridge:
-    # Image v Azure Container Registry — push z GitHub Actions přes Service Principal
     image: ${ACR_NAME}.azurecr.io/ff-partner-bridge:${IMAGE_TAG:-latest}
     environment:
-      - AZURE_KEY_VAULT_URI=https://kv-xtuning-prod.vault.azure.net/
-      - AZURE_CLIENT_ID=${MANAGED_IDENTITY_CLIENT_ID}
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      # App Insights conn — write-only telemetrický endpoint, low-sensitivity.
+      # Hodnotu načítá z ./.env (mode 600).
+      - ApplicationInsights__ConnectionString=${ApplicationInsights__ConnectionString:-}
     secrets:
+      - azure_sql_conn       # Azure SQL connection string (Bridge metadata DB)
+      - gaia_conn            # GAIA MySQL connection string (číselníky, read-only)
       - partner_cz_conn      # MySQL connection string Partner CZ
       - partner_pl_conn      # MySQL connection string Partner PL
       - partner_hu_conn      # MySQL connection string Partner HU
       - partner_us_conn      # MySQL connection string Partner US
-      - servicebus_conn      # Azure Service Bus connection string
-      - bridge_admin_api_key # API key pro REST endpoints
+      - servicebus_conn      # Azure Service Bus connection string (sdílený s FieldForce)
+      - bridge_admin_api_key # API key pro /api/* endpointy (X-Api-Key)
 ```
 
-- **Azure Key Vault:** Service Bus conn string, Application Insights key
-- **Docker Secrets:** MySQL connection strings (4x), API key
-- **Environment variables:** pouze non-sensitive (log level, retry counts)
+**Klasifikace hodnot:**
+
+- **Docker Secrets** (8× soubor v `./secrets/*.txt`, mode 600, mountnuto na `/run/secrets/<name>`):
+  všechny opravdové secrets — connection strings (Azure SQL, GAIA, 4× Partner3, Service Bus)
+  a admin API key. Načítá `DockerSecretsReader` v `Program.cs` (s fallbackem na
+  `appsettings.json` pro DEV/test).
+- **Environment variables / `.env`** (mode 600 vedle `docker-compose.yml`):
+  - `ApplicationInsights__ConnectionString` — low-sensitivity write-only endpoint,
+    Microsoft sám doporučuje embed do client-side JS pro browser telemetrii
+  - `IMAGE_TAG`, `ACR_NAME` — non-sensitive deployment params
+  - `OwnerMapping__*` — non-sensitive mapping FF GUID → Partner3 int (alternativa
+    je overlay `appsettings.Production.json`)
+- **`appsettings.json`** (zabaleno v image): non-sensitive defaults a topic names —
+  `ServiceBus:CompanySyncTopic` apod., `Bridge:Polling:IntervalMinutes`.
+- **Azure Key Vault**: nekonzumováno. `infra/F0-06-keyvault.bicep` a
+  `F0-06-keyvault-setup.sh` jsou deprecated stuby.
 
 ---
 

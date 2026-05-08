@@ -10,8 +10,10 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:8080
-      - AZURE_KEY_VAULT_URI=${AZURE_KEY_VAULT_URI}
-      - AZURE_CLIENT_ID=${MANAGED_IDENTITY_CLIENT_ID}
+      # App Insights connection string — write-only telemetrický endpoint, low-sensitivity.
+      # Hodnotu nastav v ./.env (mode 600) jako ApplicationInsights__ConnectionString=...
+      # Prázdná hodnota = telemetrie vypnutá (Bridge použije NullBridgeMetrics).
+      - ApplicationInsights__ConnectionString=${ApplicationInsights__ConnectionString:-}
     ports:
       # Pouze interní síť XTuning — ne 0.0.0.0
       - "172.24.0.1:8080:8080"
