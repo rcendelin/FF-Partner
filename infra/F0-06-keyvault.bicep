@@ -1,6 +1,22 @@
-// F0-06 — Azure Key Vault + User-Assigned Managed Identity pro FF-Partner Bridge
+// ┌─────────────────────────────────────────────────────────────────────────────┐
+// │  DEPRECATED — Bridge nekonzumuje Azure Key Vault.                           │
+// │                                                                             │
+// │  Aktuální deployment model: Docker Secrets + env vars (./.env). Bridge      │
+// │  čte secrets přes DockerSecretsReader z /run/secrets/<name>, App Insights   │
+// │  conn string se předává jako env var z .env. Žádný kód v repu nezavádí      │
+// │  AddAzureKeyVault konfigurační provider.                                    │
+// │                                                                             │
+// │  Tento Bicep je ponechán jako stub pro případnou budoucí reaktivaci         │
+// │  (např. migrace Bridge do Azure Container Apps, kde system-assigned MI      │
+// │  funguje nativně bez bootstrap secretu). Nezakládat KV bez současné         │
+// │  úpravy Program.cs — vznikla by neaktivní infra a nejasná dokumentace.     │
+// │                                                                             │
+// │  Viz CLAUDE.md sekce 13 ("Secrets management") pro aktuální model.          │
+// └─────────────────────────────────────────────────────────────────────────────┘
 //
-// Co vytváří:
+// F0-06 — Azure Key Vault + User-Assigned Managed Identity pro FF-Partner Bridge (LEGACY)
+//
+// Co by vytvářelo, kdyby se reaktivovalo:
 //   1. User-Assigned Managed Identity `id-ff-partner-bridge` — Bridge se autentizuje jako tato identita
 //   2. Key Vault `kv-xtuning-prod` (Standard tier, RBAC, soft-delete 90d, purge protection)
 //   3. Role Assignment — Key Vault Secrets User pro Managed Identity (pouze Get + List na secrets)
