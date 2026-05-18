@@ -146,6 +146,7 @@ s fallbackem na `appsettings.json` pro DEV.
 | `partner_cz_conn` … `partner_us_conn` | Partner3 MySQL per region | Vysoká |
 | `servicebus_conn` | Azure Service Bus namespace (sdílený s FieldForce) | Vysoká |
 | `bridge_admin_api_key` | API klíč pro `/api/*` endpointy (X-Api-Key header) | Vysoká |
+| `fieldforce_db_conn` | FieldForce Azure SQL — `PartnerSyncLog` tabulka (volitelný) | Vysoká |
 
 Bez `bridge_admin_api_key` se v produkci Bridge **odmítne spustit** (DEV pouští s warningem).
 

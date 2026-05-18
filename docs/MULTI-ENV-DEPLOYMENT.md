@@ -74,6 +74,7 @@ commitu repa). Liší se pouze `.env` a `secrets/`:
 | `secrets/partner_*_conn.txt` | Partner3 PROD (4×) | **Partner3 TEST (4×)** | NIKDY nesmí TEST psát do PROD DB |
 | `secrets/servicebus_conn.txt` | FF PROD namespace | **FF TEST namespace** | Klíčová izolace |
 | `secrets/bridge_admin_api_key.txt` | unikátní 32+ znaků | unikátní 32+ znaků (jiný) | Aby kompromitace TEST klíče neotevřela PROD API |
+| `secrets/fieldforce_db_conn.txt` | FF PROD Azure SQL | **FF TEST Azure SQL** | Volitelný — bez něj Bridge nezapisuje do `PartnerSyncLog` (loguje warning a pokračuje). Per-env conn string, NIKDY sdílet PROD/TEST. |
 
 ### Co je v `appsettings.json` (zabaleno v image) a per-env se neřeší
 

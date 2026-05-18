@@ -78,6 +78,17 @@ try
     var serviceBusConn = DockerSecretsReader.TryRead(
         "servicebus_conn", builder.Configuration, "Bridge:ServiceBus:ConnectionString");
 
+    // FieldForceDb — connection string do FF Azure SQL pro zápis do PartnerSyncLog.
+    // Bez něj Bridge běží, jen neloguje sync events do shared PartnerSyncLog tabulky.
+    // Načtený secret propíšeme zpět do IConfiguration, aby ho PartnerSyncLogRepository
+    // našel přes standardní configuration["FieldForceDb"] read (top-level config key).
+    var fieldForceDbConn = DockerSecretsReader.TryRead(
+        "fieldforce_db_conn", builder.Configuration, "FieldForceDb");
+    if (!string.IsNullOrEmpty(fieldForceDbConn))
+    {
+        builder.Configuration["FieldForceDb"] = fieldForceDbConn;
+    }
+
     if (!string.IsNullOrEmpty(azureSqlConn)
         && !string.IsNullOrEmpty(gaiaConn)
         && !string.IsNullOrEmpty(serviceBusConn))
