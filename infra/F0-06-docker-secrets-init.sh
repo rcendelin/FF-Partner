@@ -6,14 +6,15 @@
 #   Spustit JEDNOU na produkčním serveru (172.24.0.12 nebo kde běží Bridge Docker).
 #
 # Secrets které vytvoří:
-#   azure_sql_conn.txt      — Azure SQL conn string (Bridge metadata DB)
-#   gaia_conn.txt           — GAIA MySQL conn string (číselníky, read-only)
-#   partner_cz_conn.txt     — Partner3 CZ MySQL conn string
-#   partner_pl_conn.txt     — Partner3 PL MySQL conn string
-#   partner_hu_conn.txt     — Partner3 HU MySQL conn string
-#   partner_us_conn.txt     — Partner3 US MySQL conn string
-#   servicebus_conn.txt     — Azure Service Bus conn string
+#   azure_sql_conn.txt       — Azure SQL conn string (Bridge metadata DB)
+#   gaia_conn.txt            — GAIA MySQL conn string (číselníky, read-only)
+#   partner_cz_conn.txt      — Partner3 CZ MySQL conn string
+#   partner_pl_conn.txt      — Partner3 PL MySQL conn string
+#   partner_hu_conn.txt      — Partner3 HU MySQL conn string
+#   partner_us_conn.txt      — Partner3 US MySQL conn string
+#   servicebus_conn.txt      — Azure Service Bus conn string
 #   bridge_admin_api_key.txt — API klíč pro REST diagnostické endpointy
+#   fieldforce_db_conn.txt   — FieldForce Azure SQL conn string (pro PartnerSyncLog zápisy)
 #
 # Prerekvizity:
 #   - Azure CLI přihlášení (az login) NEBO předpřipravené conn stringy
@@ -163,6 +164,25 @@ fi
 write_secret "$SECRETS_DIR/servicebus_conn.txt" "$SB_CONN"
 unset SB_CONN
 
+# ─── fieldforce_db_conn (FieldForce Azure SQL — PartnerSyncLog zápis) ────────
+
+echo ""
+log "=== FieldForce Azure SQL connection string (PartnerSyncLog tabulka — sdílená s FF týmem) ==="
+log "Bez něj Bridge běží, jen neloguje sync events do PartnerSyncLog (sync log writes se přeskočí)."
+log "Formát: Server=tcp:<server>.database.windows.net,1433;Initial Catalog=<ff-db>;User ID=<user>;Password=<pass>;Encrypt=True;..."
+echo ""
+read_secret "FieldForce Azure SQL conn string (Enter pro přeskočení): " FIELDFORCE_DB_CONN
+if [[ -n "$FIELDFORCE_DB_CONN" ]]; then
+  write_secret "$SECRETS_DIR/fieldforce_db_conn.txt" "$FIELDFORCE_DB_CONN"
+  unset FIELDFORCE_DB_CONN
+else
+  warn "FieldForceDb secret přeskočen — sync log zápisy nebudou aktivní."
+  warn "Vytvořit ručně později: echo '<conn>' | sudo tee $SECRETS_DIR/fieldforce_db_conn.txt"
+  # Vytvořit prázdný soubor, aby docker compose secret mount nevyhodil chybu
+  touch "$SECRETS_DIR/fieldforce_db_conn.txt"
+  chmod 600 "$SECRETS_DIR/fieldforce_db_conn.txt"
+fi
+
 # ─── bridge_admin_api_key (generovat nebo zadat ručně) ───────────────────────
 
 echo ""
@@ -206,7 +226,12 @@ EXPECTED_FILES=(
   "partner_us_conn.txt"
   "servicebus_conn.txt"
   "bridge_admin_api_key.txt"
+  "fieldforce_db_conn.txt"
 )
+
+# fieldforce_db_conn je volitelný — prázdný soubor (mount placeholder) je OK,
+# Bridge prostě nezapisuje do PartnerSyncLog (loguje WRN a pokračuje).
+OPTIONAL_EMPTY=("fieldforce_db_conn.txt")
 
 FAILED=0
 for F in "${EXPECTED_FILES[@]}"; do
@@ -215,8 +240,13 @@ for F in "${EXPECTED_FILES[@]}"; do
     echo "  ✗ $F CHYBÍ" >&2
     FAILED=$((FAILED + 1))
   elif [[ ! -s "$FPATH" ]]; then
-    echo "  ✗ $F je PRÁZDNÝ" >&2
-    FAILED=$((FAILED + 1))
+    # Soubor existuje, ale je prázdný — povolíme jen u OPTIONAL_EMPTY
+    if printf '%s\n' "${OPTIONAL_EMPTY[@]}" | grep -qx "$F"; then
+      echo "  ⚠ $F existuje, je prázdný (volitelný — Bridge feature vypnutá)"
+    else
+      echo "  ✗ $F je PRÁZDNÝ" >&2
+      FAILED=$((FAILED + 1))
+    fi
   else
     MODE=$(stat -c '%a' "$FPATH" 2>/dev/null || stat -f '%p' "$FPATH" 2>/dev/null | tail -c 3)
     echo "  ✓ $F (mode: $MODE)"

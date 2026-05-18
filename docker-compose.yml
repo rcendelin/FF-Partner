@@ -43,6 +43,7 @@ services:
       - partner_us_conn
       - servicebus_conn
       - bridge_admin_api_key
+      - fieldforce_db_conn
     healthcheck:
       test: ["CMD", "curl", "--silent", "--fail", "http://localhost:8080/health"]
       interval: 30s
@@ -73,3 +74,5 @@ secrets:
     file: ./secrets/servicebus_conn.txt
   bridge_admin_api_key:
     file: ./secrets/bridge_admin_api_key.txt
+  fieldforce_db_conn:
+    file: ./secrets/fieldforce_db_conn.txt

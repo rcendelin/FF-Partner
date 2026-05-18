@@ -60,7 +60,7 @@ vyžadují `X-Api-Key` header.
 ├── docker-compose.yml          # Z repa (curl raw z GitHub main)
 ├── .env                        # ACR_NAME, IMAGE_TAG, BIND_IP, App Insights, OwnerMapping
 ├── docker-compose.yml.bak      # Volitelné — záloha před manuálními úpravami
-└── secrets/                    # Mode 700, soubory mode 600
+└── secrets/                    # Mode 700; soubory mode 644 (důvod níže)
     ├── azure_sql_conn.txt
     ├── gaia_conn.txt
     ├── partner_cz_conn.txt
@@ -68,11 +68,20 @@ vyžadují `X-Api-Key` header.
     ├── partner_hu_conn.txt
     ├── partner_us_conn.txt
     ├── servicebus_conn.txt
-    └── bridge_admin_api_key.txt
+    ├── bridge_admin_api_key.txt
+    └── fieldforce_db_conn.txt  # Volitelný — prázdný = sync log writes do FF DB vypnuté
 ```
 
-Adresář vlastní uživatel `ff-bridge`. Docker daemon běží jako root a čte
-secrets přes bind mount; tudíž `chmod 600` neomezuje runtime.
+Adresář vlastní uživatel `ff-bridge`. Docker Compose `secrets: file:` v ne-Swarm
+módu je obyčejný bind mount — zachovává host uid/gid. Bridge kontejner běží
+jako uid 1001 (`bridge` user z Dockerfile); host `ff-bridge` má typicky jiný
+uid (např. 996). Tedy soubor mode `600` (owner-only) by uvnitř kontejneru
+nedostal — uid 1001 v kontejneru ≠ host owner uid. **Musíme použít mode `644`**
+(others-readable). Bezpečnostně to neoslabuje: `secrets/` adresář má mode `700`,
+takže nikdo mimo `ff-bridge` na hostu se k souborům nedostane filesystem cestou.
+
+Čistší varianta (volitelná, pro budoucnost): `sudo chown 1001:1001 secrets/*.txt`
++ `chmod 600`. Pak ff-bridge host user už nemůže `cat` přímo, musí přes sudo.
 
 **Co kde Bridge načítá:**
 
