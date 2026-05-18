@@ -543,6 +543,14 @@ services:
 - **Azure Key Vault**: nekonzumováno. `infra/F0-06-keyvault.bicep` a
   `F0-06-keyvault-setup.sh` jsou deprecated stuby.
 
+**Multi-environment deployment** (TEST + PROD vedle sebe na stejném hostu):
+deployment model je **per-env adresář** — `/opt/ff-partner-bridge/` (PROD)
+a `/opt/ff-partner-bridge-test/` (TEST). Každý má vlastní `.env`, `secrets/`
+a Docker Compose project name (auto z názvu adresáře). Service Bus je
+**per-env namespace** (FF PROD vs FF TEST), tedy Bridge dostane jen jiný
+`servicebus_conn.txt`. Detaily viz [`docs/MULTI-ENV-DEPLOYMENT.md`](docs/MULTI-ENV-DEPLOYMENT.md).
+Pro denní provoz viz [`docs/OPERATIONS-RUNBOOK.md`](docs/OPERATIONS-RUNBOOK.md).
+
 ---
 
 ## 14. Logging — Application Insights
