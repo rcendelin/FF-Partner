@@ -29,6 +29,11 @@ services:
       - Bridge__Polling__BackfillEnabled=${Bridge__Polling__BackfillEnabled:-true}
       - OwnerMapping__DefaultOwnerId=${OwnerMapping__DefaultOwnerId:-}
       - ServiceBus__SubscriptionName=${ServiceBus__SubscriptionName:-bridge-main}
+      # Azure tenant ID — vyžaduje Microsoft.Data.SqlClient + Azure.Identity, když
+      # FieldForceDb conn string používá Authentication=Active Directory Service Principal.
+      # Conn string sám tenant ID nepřenese, Azure.Identity ho čte z env var.
+      # Hodnota je non-secret (public tenant identifier) — patří do ./.env, ne do secrets/.
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
     ports:
       # Bind IP je parametrizovaná přes ./.env — typicky host IP v XTuning subnetu
       # (např. BIND_IP=172.24.0.66). Default 127.0.0.1 = pouze localhost; nikdy 0.0.0.0
