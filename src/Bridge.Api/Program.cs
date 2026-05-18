@@ -117,10 +117,26 @@ try
         builder.Services.AddHostedService<OrderPollerUs>();
 
         // Backfill — jednorázový export objednávek za posledních 12 měsíců (Fáze 4 inicializace)
-        // Spustí se 60s po startu, idempotentní per region (bridge_sync_log kontrola)
-        builder.Services.AddHostedService<OrderBackfillService>();
+        // Spustí se 60s po startu, idempotentní per region (bridge_sync_log kontrola).
+        //
+        // Kill switch Bridge:Polling:BackfillEnabled (default true) umožňuje vypnout
+        // backfill v TEST/staging prostředích, kde by mohlo dojít k publikaci 12 měsíců
+        // historických objednávek do shared Service Bus, pokud connection stringy
+        // ukazují nečekaným směrem. Nastav přes env var Bridge__Polling__BackfillEnabled=false.
+        var backfillEnabled = builder.Configuration.GetValue(
+            "Bridge:Polling:BackfillEnabled", defaultValue: true);
+        if (backfillEnabled)
+        {
+            builder.Services.AddHostedService<OrderBackfillService>();
+        }
+        else
+        {
+            Log.Warning("OrderBackfillService VYPNUTA — Bridge:Polling:BackfillEnabled=false");
+        }
 
-        Log.Information("Infrastructure, Service Bus konzumenti, Saga, Order pollery a backfill zaregistrovány");
+        Log.Information(
+            "Infrastructure, Service Bus konzumenti, Saga, Order pollery {BackfillState} zaregistrovány",
+            backfillEnabled ? "a backfill" : "(bez backfill)");
     }
     else
     {
