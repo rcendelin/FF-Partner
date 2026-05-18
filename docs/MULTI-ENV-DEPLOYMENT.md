@@ -67,8 +67,8 @@ commitu repa). Liší se pouze `.env` a `secrets/`:
 | `BRIDGE_HOSTNAME` | `ff-partner-bridge-prod` | `ff-partner-bridge-test` | Propaguje se přes `hostname:` v compose do `Environment.MachineName` → AI `cloud_RoleInstance`. Bez něho je RoleInstance nečitelné container ID. |
 | `OwnerMapping__DefaultOwnerId` | `1` (real FF user) | např. `99` (test user v Partner3 TEST) | Mapování per env |
 | `OwnerMapping__Mappings__<GUID>` | reálná FF mapování | TEST data | Liší se podle obsahu FF instancí |
-| `Bridge__Polling__BackfillEnabled` | (zatím neimplementováno) | `false` doporučeno | Viz [§5 — drobný code change](#5-doporučený-code-change--backfill-kill-switch) |
-| `ServiceBus__SubscriptionName` | `bridge-main` | `bridge-main` (jiný namespace, jméno se může opakovat) | Subscription je per-namespace, takže stejné jméno v různých namespaces nekoliduje |
+| `Bridge__Polling__BackfillEnabled` | `true` (default) | `false` doporučeno | Implementováno v PR #8 — viz [§5](#5-backfill-kill-switch). Propagace přes compose `environment:` (PR #9). |
+| `ServiceBus__SubscriptionName` | `bridge-main` (default) | `bridge-main` (jiný namespace, jméno se může opakovat) | Subscription je per-namespace, takže stejné jméno v různých namespaces nekoliduje. Default v compose je `bridge-main` (PR #9 — empty string by způsobil `MessagingEntityNotFound`). |
 | `secrets/azure_sql_conn.txt` | PROD bridge DB | **TEST bridge DB** (samostatná) | bridge_id_mapping atd. nesmí být sdílené |
 | `secrets/gaia_conn.txt` | GAIA PROD | GAIA TEST (nebo PROD read-only) | Bridge GAIA nezapisuje → sdílené read-only je akceptovatelné |
 | `secrets/partner_*_conn.txt` | Partner3 PROD (4×) | **Partner3 TEST (4×)** | NIKDY nesmí TEST psát do PROD DB |
@@ -262,7 +262,7 @@ Reverse proxy (nginx, Traefik) na hostu může obojí konsolidovat na
 
 ---
 
-## 5. Doporučený code change — backfill kill switch
+## 5. Backfill kill switch
 
 **Důvod:** `OrderBackfillService` (`src/Bridge.Api/Pollers/OrderBackfillService.cs`)
 spustí 60s po startu jednorázový export 12 měsíců objednávek z **každé regionální
@@ -270,38 +270,22 @@ Partner3 DB**. Idempotence se řídí přes `bridge_sync_log` (operation=`order_
 v Azure SQL — což znamená, že **na čerstvé TEST Azure SQL DB se backfill VŽDY
 spustí**, i kdyby TEST Partner3 conn stringy byly špatně nastavené.
 
-### Navrhovaná úprava `Program.cs`
-
-```csharp
-// Bridge.Api/Program.cs — kolem řádku 121
-
-var backfillEnabled = builder.Configuration.GetValue(
-    "Bridge:Polling:BackfillEnabled", defaultValue: true);
-
-if (backfillEnabled)
-{
-    builder.Services.AddHostedService<OrderBackfillService>();
-    Log.Information("OrderBackfillService zaregistrována");
-}
-else
-{
-    Log.Warning("OrderBackfillService VYPNUTA přes Bridge:Polling:BackfillEnabled=false");
-}
-```
+Implementováno v PR #8 — `Program.cs` čte `Bridge:Polling:BackfillEnabled`
+s defaultem `true`. PR #9 doplnil compose `environment:` propagaci, takže
+`.env` hodnota se propaguje do kontejneru.
 
 ### Použití per env
 
 | Env | `.env` | Důsledek |
 |---|---|---|
-| PROD | (nenastaveno) | Default `true` — backfill při prvním startu |
+| PROD | (nenastaveno, default `true`) | Backfill při prvním startu, pak idempotentní |
 | TEST | `Bridge__Polling__BackfillEnabled=false` | TEST nikdy nedělá backfill — bezpečné při experimentování |
 
-**Backward compatible**: default `true` → existující PROD instance pokračuje
-beze změny chování.
-
-Tento PR je doporučený, ne nutný — pokud TEST Azure SQL DB je nová a čistá,
-backfill se spustí jednou, idempotence ho už podruhé neuvede do akce. Ale pro
-opakované testy (drop & recreate TEST DB) je flag prevencí.
+Ověření z logu Bridge:
+```
+[WRN] OrderBackfillService VYPNUTA — Bridge:Polling:BackfillEnabled=false
+[INF] … Order pollery (bez backfill) zaregistrovány
+```
 
 ---
 
@@ -409,7 +393,7 @@ Před `docker compose up` v TEST adresáři projdi:
 |---|---|---|
 | **Outbound topics jsou hardcoded** | `bridge.company.synced`, `bridge.order.created` atd. v 9 místech kódu. Pro per-env prefix outbound (např. `bridge.test.order.created`) vyžaduje refactor — vytáhnout do `appsettings.json` jako `ServiceBus:Outbound:*Topic`. | Při Scénáři A irelevantní (per-namespace), při Scénáři B.2 problém |
 | **DlqMonitorService hardcoded list** | `DlqMonitorService.cs:26-29` má napevno `("ff.company.sync", "bridge-main")` × 4. Per-env override topic nebo subscription = code change. | Stejné jako výše |
-| **OrderBackfillService kill switch** | Není. Doporučený PR viz [§5](#5-doporučený-code-change--backfill-kill-switch). | Střední — workaround přes idempotenci v `bridge_sync_log` |
+| **OrderBackfillService kill switch** | Implementováno (PR #8 + PR #9 propagace). | — |
 | **App Insights single resource** | Bridge TEST i PROD telemetrie jdou do jednoho AI resource, odlišují se `cloud_RoleInstance`. Splitting do dvou AI resource je future-optional — vyžaduje druhý AI ve `.env`. | Nízký — KQL dotazy si umí filtrovat |
 | **Compose `BIND_IP` parametrizace bez port parametru** | `${BIND_IP:-127.0.0.1}:8080:8080` — port 8080 hardcoded. Pro variantu B (stejná IP, jiný port) je třeba další proměnná `${BIND_PORT:-8080}`. | Drobný — fix při backfill kill switch PR |
 

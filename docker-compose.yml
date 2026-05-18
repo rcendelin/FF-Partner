@@ -20,6 +20,15 @@ services:
       # Hodnotu nastav v ./.env (mode 600) jako ApplicationInsights__ConnectionString=...
       # Prázdná hodnota = telemetrie vypnutá (Bridge použije NullBridgeMetrics).
       - ApplicationInsights__ConnectionString=${ApplicationInsights__ConnectionString:-}
+      # === Per-env runtime config — propaguje hodnoty z ./.env do kontejneru ===
+      # Compose `.env` slouží JEN pro interpolaci ${...} v tomto souboru;
+      # pro propagaci do kontejneru musí být klíč explicitně v environment: bloku.
+      # Default `bridge-main` u SubscriptionName brání propagaci prázdného stringu,
+      # který v .NET configuration NEPADÁ na C# `?? "bridge-main"` fallback
+      # (empty string ≠ null) → Bridge by se snažil subscribe na entitu bez jména.
+      - Bridge__Polling__BackfillEnabled=${Bridge__Polling__BackfillEnabled:-true}
+      - OwnerMapping__DefaultOwnerId=${OwnerMapping__DefaultOwnerId:-}
+      - ServiceBus__SubscriptionName=${ServiceBus__SubscriptionName:-bridge-main}
     ports:
       # Bind IP je parametrizovaná přes ./.env — typicky host IP v XTuning subnetu
       # (např. BIND_IP=172.24.0.66). Default 127.0.0.1 = pouze localhost; nikdy 0.0.0.0
