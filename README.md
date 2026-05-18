@@ -93,6 +93,8 @@ cat > .env <<'EOF'
 ACR_NAME=acrxtuningprod
 IMAGE_TAG=11
 BIND_IP=172.24.0.66
+# Hostname → cloud_RoleInstance v App Insights (umožní rozlišit TEST/PROD)
+BRIDGE_HOSTNAME=ff-partner-bridge-prod
 ApplicationInsights__ConnectionString=InstrumentationKey=...;IngestionEndpoint=https://...
 EOF
 chmod 600 .env
@@ -198,6 +200,8 @@ generování API klíče).
 | Dokument | Obsah |
 |---|---|
 | [`CLAUDE.md`](CLAUDE.md) | Primární průvodce projektem — architektura, schémata, rozhodnutí |
+| [`docs/OPERATIONS-RUNBOOK.md`](docs/OPERATIONS-RUNBOOK.md) | Provozní příručka — lifecycle, diagnostika, upgrade, rollback, failure modes |
+| [`docs/MULTI-ENV-DEPLOYMENT.md`](docs/MULTI-ENV-DEPLOYMENT.md) | TEST + PROD vedle sebe — konfigurační delta, migrační postup, image tag flow |
 | [`docs/AZURE-ACR-SETUP.md`](docs/AZURE-ACR-SETUP.md) | CI/CD pipeline + Azure ACR setup + deploy postup + troubleshooting |
 | [`docs/FIELDFORCE-INTEGRATION-SPEC.md`](docs/FIELDFORCE-INTEGRATION-SPEC.md) | Service Bus message kontrakty pro FieldForce stranu integrace |
 | [`docs/geo-structure.md`](docs/geo-structure.md) | Geografický routing CZ/PL/HU/US, hierarchie GAIA číselníků |

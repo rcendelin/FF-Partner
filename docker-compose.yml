@@ -7,6 +7,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Hostname kontejneru — propaguje se do Application Insights jako cloud_RoleInstance
+    # (přes Environment.MachineName). Bez explicitního hostname Docker přiřadí krátké
+    # container ID (mění se při recreate) → AI dashboards by neuměly rozlišit TEST/PROD.
+    # PROD .env: BRIDGE_HOSTNAME=ff-partner-bridge-prod
+    # TEST .env: BRIDGE_HOSTNAME=ff-partner-bridge-test
+    hostname: ${BRIDGE_HOSTNAME:-ff-partner-bridge}
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:8080
